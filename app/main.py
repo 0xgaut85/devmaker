@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -20,7 +21,7 @@ from app.ws.handler import router as ws_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    asyncio.create_task(init_db())
     yield
 
 
