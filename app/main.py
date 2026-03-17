@@ -8,6 +8,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
@@ -46,4 +47,8 @@ async def health():
 
 dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
 if os.path.isdir(dashboard_dir):
-    app.mount("/", StaticFiles(directory=dashboard_dir, html=True), name="dashboard")
+    app.mount("/assets", StaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        return FileResponse(os.path.join(dashboard_dir, "index.html"))
