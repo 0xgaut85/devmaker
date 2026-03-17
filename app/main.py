@@ -38,7 +38,7 @@ app.include_router(config_router, prefix="/api/config", tags=["config"])
 app.include_router(logs_router, prefix="/api/logs", tags=["logs"])
 app.include_router(ws_router)
 
-dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "..", "dashboard", "dist")
+dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
 if os.path.isdir(dashboard_dir):
     app.mount("/", StaticFiles(directory=dashboard_dir, html=True), name="dashboard")
 
