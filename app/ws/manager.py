@@ -36,7 +36,7 @@ class ConnectionManager:
     def disconnect(self, account_id: str):
         self._connections.pop(account_id, None)
         for req_id, fut in list(self._pending.items()):
-            if req_id.startswith(account_id):
+            if req_id.startswith(account_id + ":"):
                 if not fut.done():
                     fut.set_exception(ConnectionError("Extension disconnected"))
                 self._pending.pop(req_id, None)

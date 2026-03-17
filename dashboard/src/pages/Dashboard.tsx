@@ -18,6 +18,8 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!accountId) return;
+    let cancelled = false;
+    let retryDelay = 1000;
 
     api.logs.get(accountId, 200).then(setLogs).catch(console.error);
     api.accounts.status(accountId).then(setStatus).catch(console.error);
@@ -26,28 +28,44 @@ export default function Dashboard() {
       api.accounts.status(accountId).then(setStatus).catch(console.error);
     }, 5000);
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/logs/${accountId}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    function connectWs() {
+      if (cancelled) return;
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws/logs/${accountId}`;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "log") {
-          setLogs((prev) => [...prev.slice(-499), {
-            id: Date.now().toString(),
-            message: data.message,
-            level: data.level,
-            timestamp: data.timestamp,
-          }]);
-        }
-      } catch {}
-    };
+      ws.onopen = () => { retryDelay = 1000; };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "log") {
+            setLogs((prev) => [...prev.slice(-499), {
+              id: Date.now().toString(),
+              message: data.message,
+              level: data.level,
+              timestamp: data.timestamp,
+            }]);
+          }
+        } catch { /* ignore malformed messages */ }
+      };
+
+      ws.onclose = () => {
+        if (cancelled) return;
+        setTimeout(connectWs, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30000);
+      };
+
+      ws.onerror = () => { ws.close(); };
+    }
+
+    connectWs();
 
     return () => {
+      cancelled = true;
       clearInterval(statusInterval);
-      ws.close();
+      wsRef.current?.close();
     };
   }, [accountId]);
 

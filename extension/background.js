@@ -92,7 +92,20 @@ async function getXTab() {
     return tabs[0];
   }
   const newTab = await chrome.tabs.create({ url: "https://x.com/home", active: false });
-  await new Promise((r) => setTimeout(r, 5000));
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("Tab load timed out after 30s"));
+    }, 30000);
+    function listener(tabId, info) {
+      if (tabId === newTab.id && info.status === "complete") {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timeout);
+        setTimeout(resolve, 1000);
+      }
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
   return newTab;
 }
 

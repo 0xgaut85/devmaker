@@ -43,6 +43,6 @@ disconnectBtn.addEventListener("click", () => {
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "status") {
-    updateUI(msg.status === "connected");
+    updateUI(msg.status === "connected", backendUrlInput.value, accountIdInput.value);
   }
 });

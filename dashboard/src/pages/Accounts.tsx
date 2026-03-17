@@ -15,6 +15,7 @@ export default function Accounts() {
   const [newName, setNewName] = useState("");
   const [loading, setLoading] = useState(true);
   const [seqCounts, setSeqCounts] = useState<Record<string, number>>({});
+  const [error, setError] = useState("");
 
   async function load() {
     try {
@@ -31,26 +32,46 @@ export default function Accounts() {
 
   async function create() {
     if (!newName.trim()) return;
-    await api.accounts.create(newName.trim());
-    setNewName("");
-    load();
+    setError("");
+    try {
+      await api.accounts.create(newName.trim());
+      setNewName("");
+      load();
+    } catch (err: any) {
+      setError(err.message || "Failed to create account");
+    }
   }
 
   async function remove(id: string) {
     if (!confirm("Delete this account?")) return;
-    await api.accounts.delete(id);
-    load();
+    setError("");
+    try {
+      await api.accounts.delete(id);
+      load();
+    } catch (err: any) {
+      setError(err.message || "Failed to delete account");
+    }
   }
 
   async function start(id: string) {
-    const count = seqCounts[id] || 1;
-    await api.accounts.start(id, count);
-    load();
+    setError("");
+    try {
+      const count = seqCounts[id] || 1;
+      await api.accounts.start(id, count);
+      load();
+    } catch (err: any) {
+      setError(err.message || "Failed to start sequence");
+    }
   }
 
   async function stop(id: string) {
-    await api.accounts.stop(id);
-    load();
+    setError("");
+    try {
+      await api.accounts.stop(id);
+      load();
+    } catch (err: any) {
+      setError(err.message || "Failed to stop sequence");
+    }
   }
 
   if (loading) return <div className="text-neutral-500 text-sm">Loading...</div>;
@@ -58,6 +79,13 @@ export default function Accounts() {
   return (
     <div>
       <h2 className="text-xl font-semibold text-white mb-6">Accounts</h2>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm rounded-lg px-4 py-2.5 mb-4 flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError("")} className="text-red-400/60 hover:text-red-400 ml-3">✕</button>
+        </div>
+      )}
 
       <div className="flex gap-3 mb-8">
         <input

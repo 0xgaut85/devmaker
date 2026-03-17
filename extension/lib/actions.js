@@ -3,6 +3,23 @@
  * Uses human simulation for all interactions.
  */
 
+function getPostPath(url) {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url.replace(/https?:\/\/[^/]+/, "");
+  }
+}
+
+async function navigateToPost(postUrl) {
+  if (!postUrl) return;
+  const path = getPostPath(postUrl);
+  if (path && !window.location.pathname.startsWith(path)) {
+    window.location.href = postUrl;
+    await sleep(3000);
+  }
+}
+
 async function actionPostTweet(params = {}) {
   const text = params.text || "";
   const imageUrls = params.image_urls || [];
@@ -35,10 +52,7 @@ async function actionPostComment(params = {}) {
   const text = params.text || "";
   const postUrl = params.post_url || "";
 
-  if (postUrl && !window.location.href.includes(postUrl.split("x.com")[1] || "")) {
-    window.location.href = postUrl;
-    await sleep(3000);
-  }
+  await navigateToPost(postUrl);
 
   const replyBox = await waitForElement('[data-testid="tweetTextarea_0"], [role="textbox"]');
   if (!replyBox) throw new Error("Reply textbox not found");
@@ -100,6 +114,8 @@ async function actionQuoteTweet(params = {}) {
   const postUrl = params.post_url || "";
   const text = params.text || "";
 
+  await navigateToPost(postUrl);
+
   const retweetBtn = document.querySelector('[data-testid="retweet"]');
   if (retweetBtn) {
     await humanClick(retweetBtn);
@@ -131,6 +147,8 @@ async function actionQuoteTweet(params = {}) {
 }
 
 async function actionLikePost(params = {}) {
+  await navigateToPost(params.post_url);
+
   const likeBtn = document.querySelector('[data-testid="like"]');
   if (!likeBtn) return { status: "ok" };
   await humanClick(likeBtn);
@@ -139,6 +157,8 @@ async function actionLikePost(params = {}) {
 }
 
 async function actionBookmarkPost(params = {}) {
+  await navigateToPost(params.post_url);
+
   const bookmarkBtn = document.querySelector('[data-testid="bookmark"]');
   if (!bookmarkBtn) return { status: "ok" };
   await humanClick(bookmarkBtn);
@@ -155,7 +175,8 @@ async function actionFollowUser(params = {}) {
     await sleep(3000);
   }
 
-  const followBtn = document.querySelector(`[data-testid="placementTracking"] [role="button"], [aria-label="Follow @${handle}"]`);
+  const escaped = CSS.escape(`Follow @${handle}`);
+  const followBtn = document.querySelector(`[data-testid="placementTracking"] [role="button"], [aria-label="${escaped}"]`);
   if (followBtn) {
     await humanClick(followBtn);
     await sleep(randomBetween(1000, 2000));
@@ -167,10 +188,7 @@ async function actionFollowUser(params = {}) {
 async function actionRetweet(params = {}) {
   const postUrl = params.post_url || "";
 
-  if (postUrl && !window.location.href.includes(postUrl.split("x.com")[1] || "")) {
-    window.location.href = postUrl;
-    await sleep(3000);
-  }
+  await navigateToPost(postUrl);
 
   const retweetBtn = document.querySelector('[data-testid="retweet"]');
   if (!retweetBtn) return { status: "error", error: "Retweet button not found" };

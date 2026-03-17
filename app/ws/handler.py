@@ -85,7 +85,11 @@ async def logs_ws(ws: WebSocket, account_id: str):
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
-        _log_subscribers.get(account_id, []).remove(ws) if ws in _log_subscribers.get(account_id, []) else None
+        subs = _log_subscribers.get(account_id, [])
+        if ws in subs:
+            subs.remove(ws)
+            if not subs:
+                _log_subscribers.pop(account_id, None)
 
 
 def get_log_fn(account_id: str):

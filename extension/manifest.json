@@ -4,7 +4,7 @@
   "version": "2.0.0",
   "description": "Browser automation bridge for DevMaker",
   "permissions": ["activeTab", "storage", "tabs"],
-  "host_permissions": ["*://x.com/*", "*://twitter.com/*"],
+  "host_permissions": ["*://x.com/*", "*://twitter.com/*", "*://*.railway.app/*", "*://localhost/*"],
   "background": {
     "service_worker": "background.js"
   },

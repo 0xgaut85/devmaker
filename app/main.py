@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.database import init_db
+from app.database import init_db, db_ready
 from app.api.accounts import router as accounts_router
 from app.api.config import router as config_router
 from app.api.logs import router as logs_router
@@ -43,7 +43,7 @@ app.include_router(ws_router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "db_ready": db_ready}
 
 
 dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")

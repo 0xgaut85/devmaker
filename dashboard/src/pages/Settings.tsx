@@ -7,10 +7,13 @@ export default function Settings() {
   const [config, setConfig] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     if (!accountId) return;
-    api.config.get(accountId).then(setConfig).catch(console.error);
+    api.config.get(accountId)
+      .then(setConfig)
+      .catch((err: any) => setLoadError(err.message || "Failed to load config"));
   }, [accountId]);
 
   async function save() {
@@ -31,6 +34,7 @@ export default function Settings() {
     setConfig((c) => c ? { ...c, [key]: value } : c);
   }
 
+  if (loadError) return <div className="text-red-400 text-sm">Error: {loadError}</div>;
   if (!config) return <div className="text-neutral-500 text-sm">Loading...</div>;
 
   return (
@@ -166,7 +170,7 @@ function Number({ label, value, onChange }: { label: string; value: number; onCh
   return (
     <div className="flex items-center gap-3">
       <label className="text-xs text-neutral-400 w-40 shrink-0">{label}</label>
-      <input type="number" value={value} onChange={(e) => onChange(parseInt(e.target.value) || 0)}
+      <input type="number" value={value ?? 0} onChange={(e) => onChange(parseInt(e.target.value) || 0)}
         className="w-24 bg-neutral-800 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-white outline-none focus:border-neutral-500 text-center" />
     </div>
   );
@@ -176,7 +180,7 @@ function Select({ label, value, onChange, options }: { label: string; value: str
   return (
     <div className="flex items-center gap-3">
       <label className="text-xs text-neutral-400 w-40 shrink-0">{label}</label>
-      <select value={value} onChange={(e) => onChange(e.target.value)}
+      <select value={value ?? ""} onChange={(e) => onChange(e.target.value)}
         className="bg-neutral-800 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-white outline-none focus:border-neutral-500">
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
       </select>
@@ -190,7 +194,7 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
       <label className="text-xs text-neutral-400 w-40 shrink-0">{label}</label>
       <button onClick={() => onChange(!value)}
         className={`w-10 h-5 rounded-full transition-colors relative ${value ? "bg-green-500" : "bg-neutral-700"}`}>
-        <div className={`w-4 h-4 bg-white rounded-full absolute top-0.5 transition-transform ${value ? "left-5" : "left-0.5"}`} />
+        <div className={`w-4 h-4 bg-white rounded-full absolute top-0.5 transition-all ${value ? "left-[22px]" : "left-0.5"}`} />
       </button>
     </div>
   );
