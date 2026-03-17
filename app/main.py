@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="DevMaker", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="DevMaker", version="2.0.0", lifespan=lifespan, redirect_slashes=False)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +34,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def proxy_scheme(request: Request, call_next):
+    if request.headers.get("x-forwarded-proto") == "https":
+        request.scope["scheme"] = "https"
+    return await call_next(request)
+
 
 app.include_router(accounts_router, prefix="/api/accounts", tags=["accounts"])
 app.include_router(config_router, prefix="/api/config", tags=["config"])

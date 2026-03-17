@@ -33,7 +33,8 @@ class SequenceRequest(BaseModel):
     count: int = 1
 
 
-@router.get("/", response_model=list[AccountOut])
+@router.get("", response_model=list[AccountOut])
+@router.get("/", response_model=list[AccountOut], include_in_schema=False)
 async def list_accounts(db: AsyncSession = Depends(get_db), _=Depends(verify_api_key)):
     result = await db.execute(select(Account).order_by(Account.created_at))
     accounts = result.scalars().all()
@@ -47,7 +48,8 @@ async def list_accounts(db: AsyncSession = Depends(get_db), _=Depends(verify_api
     ]
 
 
-@router.post("/", response_model=AccountOut, status_code=201)
+@router.post("", response_model=AccountOut, status_code=201)
+@router.post("/", response_model=AccountOut, status_code=201, include_in_schema=False)
 async def create_account(body: AccountCreate, db: AsyncSession = Depends(get_db), _=Depends(verify_api_key)):
     existing = await db.execute(select(Account).where(Account.name == body.name))
     if existing.scalar_one_or_none():
