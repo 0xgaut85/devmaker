@@ -7,9 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
@@ -50,6 +50,12 @@ dashboard_dir = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist
 if os.path.isdir(dashboard_dir):
     app.mount("/assets", StaticFiles(directory=os.path.join(dashboard_dir, "assets")), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        return FileResponse(os.path.join(dashboard_dir, "index.html"))
+
+@app.exception_handler(404)
+async def spa_fallback(request: Request, exc):
+    if request.url.path.startswith(("/api/", "/ws", "/health")):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    index = os.path.join(dashboard_dir, "index.html")
+    if os.path.isfile(index):
+        return FileResponse(index)
+    return JSONResponse({"detail": "Not found"}, status_code=404)

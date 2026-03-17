@@ -41,7 +41,7 @@ async def init_db():
             return
         except Exception as e:
             wait = 2 ** attempt
-            logger.warning("DB init attempt %d failed: %s — retrying in %ds", attempt + 1, e, wait)
+            logger.warning("DB init attempt %d failed: %r — retrying in %ds", attempt + 1, e, wait)
             await asyncio.sleep(wait)
     logger.error("Failed to initialize database after 5 attempts — starting without tables")
 
