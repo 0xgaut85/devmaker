@@ -54,6 +54,33 @@ TOPIC_KEYWORDS = {
     "Culture / memes / takes": ["meme", "hot take", "viral", "discourse", "ratio", "timeline"],
 }
 
+_RT_BLOCKLIST = [
+    "vote", "voting", "election", "candidate", "democrat", "republican", "trump",
+    "biden", "kamala", "governor", "senator", "congress", "political", "ballot",
+    "campaign trail", "maga", "liberal", "conservative",
+    "launching soon", "pre-order", "use code", "discount code", "promo code",
+    "giveaway", "giving away", "drop your wallet", "airdrop claim",
+    "link in bio", "sign up now", "limited time", "act fast", "don't miss",
+    "sponsored", "ad ", "#ad ", "partnership with", "collab with",
+    "onlyfans", "subscribe to my", "join my telegram",
+    "retweet to win", "follow and rt", "like and retweet", "tag a friend",
+]
+
+
+def _is_rt_worthy(post: dict, enabled_topics: list[str]) -> bool:
+    """Check if a post is worth retweeting — on-topic and not junk/promo/political."""
+    text = post.get("text", "").lower()
+    for blocked in _RT_BLOCKLIST:
+        if blocked in text:
+            return False
+    topic = post.get("_topic", "")
+    if topic and topic in enabled_topics:
+        return True
+    if post.get("likes", 0) > 500:
+        return True
+    return False
+
+
 _IMAGE_STOPWORDS = frozenset({
     "the", "a", "an", "is", "are", "was", "were", "be", "to", "of", "and",
     "in", "that", "it", "for", "on", "with", "as", "at", "by", "this", "i",
@@ -479,6 +506,13 @@ class Orchestrator:
                         used_handles.add(topic_post.get("handle", ""))
 
                 elif action == "qrt":
+                    # Find an RT-worthy post for quoting
+                    qrt_candidates = [p for p in available if _is_rt_worthy(p, enabled)]
+                    if qrt_candidates:
+                        post = qrt_candidates[0]
+                    elif not _is_rt_worthy(post, enabled):
+                        self.log("[QRT] Skipped — no quality post to quote.")
+                        continue
                     self.log(f"[QRT] Quoting @{post.get('handle')}")
                     await self._cmd("navigate", url=post["url"])
                     await self._like_and_bookmark(post["url"])
@@ -500,6 +534,13 @@ class Orchestrator:
                         used_handles.add(post.get("handle", ""))
 
                 elif action == "rt":
+                    # Find an RT-worthy post — skip political, promo, off-topic junk
+                    rt_candidates = [p for p in available if _is_rt_worthy(p, enabled)]
+                    if rt_candidates:
+                        post = rt_candidates[0]
+                    elif not _is_rt_worthy(post, enabled):
+                        self.log("[RT] Skipped — no quality post to retweet.")
+                        continue
                     self.log(f"[RT] Reposting @{post.get('handle')}")
                     try:
                         await self._cmd("retweet", post_url=post["url"])
