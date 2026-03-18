@@ -16,6 +16,7 @@ export default function Accounts() {
   const [loading, setLoading] = useState(true);
   const [seqCounts, setSeqCounts] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
+  const [starting, setStarting] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -53,14 +54,21 @@ export default function Accounts() {
     }
   }
 
-  async function start(id: string) {
+  async function start(id: string, connected: boolean) {
+    if (!connected) {
+      setError("Connect the Chrome extension to this account first (open the extension popup and enter the Account ID).");
+      return;
+    }
     setError("");
+    setStarting(id);
     try {
       const count = seqCounts[id] || 1;
       await api.accounts.start(id, count);
       load();
     } catch (err: any) {
       setError(err.message || "Failed to start sequence");
+    } finally {
+      setStarting(null);
     }
   }
 
@@ -135,9 +143,13 @@ export default function Accounts() {
                 <button onClick={() => stop(a.id)} className="bg-red-500/20 text-red-400 text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-red-500/30">
                   Stop
                 </button>
+              ) : starting === a.id ? (
+                <button disabled className="bg-green-500/20 text-green-400 text-xs font-medium px-3 py-1.5 rounded-lg opacity-60">
+                  Starting...
+                </button>
               ) : (
-                <button onClick={() => start(a.id)} disabled={!a.connected} className="bg-green-500/20 text-green-400 text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-green-500/30 disabled:opacity-30 disabled:cursor-not-allowed">
-                  Start
+                <button onClick={() => start(a.id, a.connected)} className={`text-xs font-medium px-3 py-1.5 rounded-lg ${a.connected ? "bg-green-500/20 text-green-400 hover:bg-green-500/30" : "bg-neutral-800 text-neutral-500 hover:bg-neutral-700 hover:text-neutral-300"}`}>
+                  {a.connected ? "Start" : "Start (offline)"}
                 </button>
               )}
             </div>
