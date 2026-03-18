@@ -108,6 +108,18 @@ export default function Settings() {
           <Number label="Replies per Scan" value={config.sniper_replies_per_scan} onChange={(v) => update("sniper_replies_per_scan", v)} />
         </Section>
 
+        <Section title="Personality">
+          <p className="text-xs text-neutral-500 mb-3">Shape the account's unique voice. These traits influence how the LLM generates content.</p>
+          <Slider label="Humor" sublabel="Serious → Witty" value={config.personality_humor} onChange={(v) => update("personality_humor", v)} />
+          <Slider label="Sarcasm" sublabel="Earnest → Sarcastic" value={config.personality_sarcasm} onChange={(v) => update("personality_sarcasm", v)} />
+          <Slider label="Confidence" sublabel="Humble → Bold" value={config.personality_confidence} onChange={(v) => update("personality_confidence", v)} />
+          <Slider label="Warmth" sublabel="Detached → Friendly" value={config.personality_warmth} onChange={(v) => update("personality_warmth", v)} />
+          <Slider label="Controversy" sublabel="Safe → Provocative" value={config.personality_controversy} onChange={(v) => update("personality_controversy", v)} />
+          <Slider label="Intellect" sublabel="Casual → Analytical" value={config.personality_intellect} onChange={(v) => update("personality_intellect", v)} />
+          <Slider label="Brevity" sublabel="Verbose → Punchy" value={config.personality_brevity} onChange={(v) => update("personality_brevity", v)} />
+          <Slider label="Edginess" sublabel="Wholesome → Raw" value={config.personality_edginess} onChange={(v) => update("personality_edginess", v)} />
+        </Section>
+
         <Section title="Intelligence">
           <Toggle label="LLM Classification" value={config.use_llm_classification} onChange={(v) => update("use_llm_classification", v)} />
           <Toggle label="Vision Image Check" value={config.use_vision_image_check} onChange={(v) => update("use_vision_image_check", v)} />
@@ -210,6 +222,27 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
         className={`w-10 h-5 rounded-full transition-colors relative ${value ? "bg-green-500" : "bg-neutral-700"}`}>
         <div className={`w-4 h-4 bg-white rounded-full absolute top-0.5 transition-all ${value ? "left-[22px]" : "left-0.5"}`} />
       </button>
+    </div>
+  );
+}
+
+function Slider({ label, sublabel, value, onChange }: { label: string; sublabel: string; value: number; onChange: (v: number) => void }) {
+  const v = value ?? 5;
+  return (
+    <div className="flex items-center gap-3">
+      <div className="w-28 shrink-0">
+        <label className="text-xs text-white font-medium">{label}</label>
+        <div className="text-[10px] text-neutral-500">{sublabel}</div>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={10}
+        value={v}
+        onChange={(e) => onChange(parseInt(e.target.value))}
+        className="flex-1 h-1.5 accent-white bg-neutral-700 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:cursor-pointer"
+      />
+      <span className="text-xs text-neutral-300 w-6 text-center font-mono">{v}</span>
     </div>
   );
 }

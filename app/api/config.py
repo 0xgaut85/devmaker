@@ -27,6 +27,8 @@ EXPOSED_FIELDS = [
     "daily_max_tweets", "daily_max_comments", "daily_max_likes",
     "daily_max_follows", "daily_max_qrts",
     "active_hours_enabled", "active_hours_start", "active_hours_end", "active_hours_timezone",
+    "personality_humor", "personality_sarcasm", "personality_confidence", "personality_warmth",
+    "personality_controversy", "personality_intellect", "personality_brevity", "personality_edginess",
     "action_delay_seconds", "sequence_delay_minutes", "min_engagement_likes",
 ]
 

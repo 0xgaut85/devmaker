@@ -103,6 +103,16 @@ class Config(Base):
     active_hours_end = Column(Integer, default=23)
     active_hours_timezone = Column(String, default="UTC")
 
+    # Personality (0-10 sliders)
+    personality_humor = Column(Integer, default=5)
+    personality_sarcasm = Column(Integer, default=3)
+    personality_confidence = Column(Integer, default=6)
+    personality_warmth = Column(Integer, default=5)
+    personality_controversy = Column(Integer, default=3)
+    personality_intellect = Column(Integer, default=5)
+    personality_brevity = Column(Integer, default=5)
+    personality_edginess = Column(Integer, default=3)
+
     # Timing
     action_delay_seconds = Column(Integer, default=3)
     sequence_delay_minutes = Column(Integer, default=45)
