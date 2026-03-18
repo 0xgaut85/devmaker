@@ -66,8 +66,8 @@ export default function Settings() {
         </Section>
 
         <Section title="Topics">
-          <p className="text-xs text-neutral-500 mb-3">Add topics with weights (higher = more frequent). Used for dev/project modes.</p>
-          <TopicsEditor value={config.topics || {}} onChange={(v) => update("topics", v)} />
+          <p className="text-xs text-neutral-500 mb-3">Toggle topics on and set weight (1-5). Higher weight = more frequent content.</p>
+          <TopicsPicker value={config.topics || {}} onChange={(v) => update("topics", v)} preset={TOPICS_GENERAL} />
         </Section>
 
         <Section title="Degen Voice">
@@ -78,7 +78,7 @@ export default function Settings() {
 
         <Section title="Degen Topics">
           <p className="text-xs text-neutral-500 mb-3">Topics for degen farming mode.</p>
-          <TopicsEditor value={config.degen_topics || {}} onChange={(v) => update("degen_topics", v)} />
+          <TopicsPicker value={config.degen_topics || {}} onChange={(v) => update("degen_topics", v)} preset={TOPICS_DEGEN} />
         </Section>
 
         <Section title="Project Farming">
@@ -90,7 +90,7 @@ export default function Settings() {
           <Number label="Min Likes" value={config.project_timeline_min_likes} onChange={(v) => update("project_timeline_min_likes", v)} />
           <div className="pt-2">
             <label className="text-xs text-neutral-400 block mb-2">Project Categories</label>
-            <TopicsEditor value={config.project_categories || {}} onChange={(v) => update("project_categories", v)} />
+            <TopicsPicker value={config.project_categories || {}} onChange={(v) => update("project_categories", v)} preset={TOPICS_GENERAL} />
           </div>
         </Section>
 
@@ -247,81 +247,114 @@ function Slider({ label, sublabel, value, onChange }: { label: string; sublabel:
   );
 }
 
-function TopicsEditor({ value, onChange }: { value: Record<string, number>; onChange: (v: Record<string, number>) => void }) {
-  const [newTopic, setNewTopic] = useState("");
-  const [newWeight, setNewWeight] = useState(1);
+const TOPICS_GENERAL = [
+  "Technology", "AI & Machine Learning", "Software Development", "Programming",
+  "Web Development", "Mobile Dev", "DevOps & Cloud", "Cybersecurity",
+  "Open Source", "Startups", "Entrepreneurship", "Product Management",
+  "SaaS", "Venture Capital", "Finance", "Trading & Markets",
+  "Cryptocurrency", "DeFi", "Economics", "Geopolitics",
+  "World News", "US Politics", "Science", "Space & Astronomy",
+  "Climate & Energy", "Health & Wellness", "Psychology", "Philosophy",
+  "Design & UX", "Marketing", "Growth Hacking", "SEO",
+  "Social Media", "Content Creation", "Productivity", "Remote Work",
+  "Career Advice", "Leadership", "Data Science", "Robotics",
+  "Gaming", "Esports", "Music", "Film & TV",
+  "Books & Reading", "Art & Culture", "Sports", "Fitness",
+  "Food & Cooking", "Travel", "Education", "Self Improvement",
+];
 
-  function addTopic() {
-    const t = newTopic.trim();
-    if (!t) return;
-    onChange({ ...value, [t]: newWeight });
-    setNewTopic("");
-    setNewWeight(1);
-  }
+const TOPICS_DEGEN = [
+  "Crypto Trading", "Bitcoin", "Ethereum", "Solana",
+  "Memecoins", "NFTs", "DeFi Protocols", "Yield Farming",
+  "Airdrops", "Token Launches", "DEX Trading", "On-chain Analysis",
+  "Crypto News", "Altcoins", "Layer 2", "Web3 Gaming",
+  "DAO Governance", "Tokenomics", "Whale Watching", "Alpha Calls",
+  "Presales", "Rug Pulls & Scams", "CEX Listings", "Crypto Regulation",
+  "Stablecoins", "Derivatives & Perps", "Bridge & Cross-chain", "Crypto Culture",
+];
 
-  function removeTopic(key: string) {
+function TopicsPicker({ value, onChange, preset }: {
+  value: Record<string, number>;
+  onChange: (v: Record<string, number>) => void;
+  preset: string[];
+}) {
+  const [customTopic, setCustomTopic] = useState("");
+
+  const allTopics = [...new Set([...preset, ...Object.keys(value)])];
+
+  function toggle(topic: string) {
     const copy = { ...value };
-    delete copy[key];
+    if (copy[topic] !== undefined) {
+      delete copy[topic];
+    } else {
+      copy[topic] = 3;
+    }
     onChange(copy);
   }
 
-  function updateWeight(key: string, w: number) {
-    onChange({ ...value, [key]: w });
+  function setWeight(topic: string, w: number) {
+    onChange({ ...value, [topic]: Math.max(1, Math.min(5, w)) });
   }
 
-  const entries = Object.entries(value);
+  function addCustom() {
+    const t = customTopic.trim();
+    if (!t || value[t] !== undefined) return;
+    onChange({ ...value, [t]: 3 });
+    setCustomTopic("");
+  }
+
+  const enabledTopics = allTopics.filter((t) => value[t] !== undefined);
+  const disabledTopics = allTopics.filter((t) => value[t] === undefined);
 
   return (
     <div>
-      {entries.length > 0 && (
-        <div className="space-y-2 mb-3">
-          {entries.map(([topic, weight]) => (
-            <div key={topic} className="flex items-center gap-2">
+      {enabledTopics.length > 0 && (
+        <div className="space-y-1.5 mb-4">
+          {enabledTopics.map((topic) => (
+            <div key={topic} className="flex items-center gap-2 bg-neutral-800/60 rounded-lg px-3 py-1.5">
+              <button onClick={() => toggle(topic)} className="text-green-400 hover:text-red-400 text-sm shrink-0" title="Remove">✓</button>
               <span className="text-sm text-white flex-1 truncate">{topic}</span>
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={weight}
-                onChange={(e) => updateWeight(topic, parseInt(e.target.value) || 1)}
-                className="w-16 bg-neutral-800 border border-neutral-700 rounded-md px-2 py-1 text-xs text-white text-center outline-none"
-              />
-              <button
-                onClick={() => removeTopic(topic)}
-                className="text-neutral-500 hover:text-red-400 text-xs px-2 py-1 rounded hover:bg-neutral-800"
-              >
-                Remove
-              </button>
+              <div className="flex items-center gap-1">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => setWeight(topic, n)}
+                    className={`w-5 h-5 rounded text-[10px] font-mono transition-colors ${
+                      n <= (value[topic] ?? 3)
+                        ? "bg-white text-black"
+                        : "bg-neutral-700 text-neutral-500 hover:bg-neutral-600"
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
             </div>
           ))}
         </div>
       )}
-      {entries.length === 0 && (
-        <p className="text-neutral-600 text-xs mb-3">No topics added yet.</p>
-      )}
+
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {disabledTopics.map((topic) => (
+          <button
+            key={topic}
+            onClick={() => toggle(topic)}
+            className="px-2.5 py-1 rounded-full text-xs text-neutral-400 bg-neutral-800 border border-neutral-700 hover:border-neutral-500 hover:text-white transition-colors"
+          >
+            + {topic}
+          </button>
+        ))}
+      </div>
+
       <div className="flex items-center gap-2">
         <input
-          value={newTopic}
-          onChange={(e) => setNewTopic(e.target.value)}
-          placeholder="Topic name"
-          onKeyDown={(e) => e.key === "Enter" && addTopic()}
+          value={customTopic}
+          onChange={(e) => setCustomTopic(e.target.value)}
+          placeholder="Add custom topic..."
+          onKeyDown={(e) => e.key === "Enter" && addCustom()}
           className="flex-1 bg-neutral-800 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-white outline-none focus:border-neutral-500"
         />
-        <input
-          type="number"
-          min={1}
-          max={10}
-          value={newWeight}
-          onChange={(e) => setNewWeight(parseInt(e.target.value) || 1)}
-          className="w-16 bg-neutral-800 border border-neutral-700 rounded-md px-2 py-1.5 text-sm text-white text-center outline-none"
-          title="Weight"
-        />
-        <button
-          onClick={addTopic}
-          className="bg-neutral-700 text-white text-xs font-medium px-3 py-1.5 rounded-md hover:bg-neutral-600"
-        >
-          Add
-        </button>
+        <button onClick={addCustom} className="bg-neutral-700 text-white text-xs font-medium px-3 py-1.5 rounded-md hover:bg-neutral-600">Add</button>
       </div>
     </div>
   );
