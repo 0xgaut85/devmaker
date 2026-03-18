@@ -19,9 +19,8 @@ const COMMAND_HANDLERS = {
   follow_user: async (params) => await actionFollowUser(params),
   retweet: async (params) => await actionRetweet(params),
 
-  navigate: async (params) => await actionNavigate(params),
+  // navigate and session_warmup are handled by background.js
   scroll: async (params) => await actionScroll(params),
-  session_warmup: async () => await actionSessionWarmup(),
   lurk_scroll: async (params) => await actionLurkScroll(params),
 
   ping: async () => ({ status: "ok" }),

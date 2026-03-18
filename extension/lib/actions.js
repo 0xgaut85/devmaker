@@ -1,24 +1,10 @@
 /**
  * Browser actions — post tweet, comment, like, bookmark, follow, retweet.
  * Uses human simulation for all interactions.
+ *
+ * NOTE: All page navigation is handled by background.js via chrome.tabs.update.
+ * Content script functions must NEVER use window.location.href (it kills the script).
  */
-
-function getPostPath(url) {
-  try {
-    return new URL(url).pathname;
-  } catch {
-    return url.replace(/https?:\/\/[^/]+/, "");
-  }
-}
-
-async function navigateToPost(postUrl) {
-  if (!postUrl) return;
-  const path = getPostPath(postUrl);
-  if (path && !window.location.pathname.startsWith(path)) {
-    window.location.href = postUrl;
-    await sleep(3000);
-  }
-}
 
 async function actionPostTweet(params = {}) {
   const text = params.text || "";
@@ -50,9 +36,6 @@ async function actionPostTweet(params = {}) {
 
 async function actionPostComment(params = {}) {
   const text = params.text || "";
-  const postUrl = params.post_url || "";
-
-  await navigateToPost(postUrl);
 
   const replyBox = await waitForElement('[data-testid="tweetTextarea_0"], [role="textbox"]');
   if (!replyBox) throw new Error("Reply textbox not found");
@@ -111,10 +94,7 @@ async function actionPostThread(params = {}) {
 }
 
 async function actionQuoteTweet(params = {}) {
-  const postUrl = params.post_url || "";
   const text = params.text || "";
-
-  await navigateToPost(postUrl);
 
   const retweetBtn = document.querySelector('[data-testid="retweet"]');
   if (retweetBtn) {
@@ -147,8 +127,6 @@ async function actionQuoteTweet(params = {}) {
 }
 
 async function actionLikePost(params = {}) {
-  await navigateToPost(params.post_url);
-
   const likeBtn = document.querySelector('[data-testid="like"]');
   if (!likeBtn) return { status: "ok" };
   await humanClick(likeBtn);
@@ -157,8 +135,6 @@ async function actionLikePost(params = {}) {
 }
 
 async function actionBookmarkPost(params = {}) {
-  await navigateToPost(params.post_url);
-
   const bookmarkBtn = document.querySelector('[data-testid="bookmark"]');
   if (!bookmarkBtn) return { status: "ok" };
   await humanClick(bookmarkBtn);
@@ -169,11 +145,6 @@ async function actionBookmarkPost(params = {}) {
 async function actionFollowUser(params = {}) {
   const handle = params.handle || "";
   if (!handle) throw new Error("No handle provided");
-
-  if (!window.location.href.includes(`/${handle}`)) {
-    window.location.href = `https://x.com/${handle}`;
-    await sleep(3000);
-  }
 
   const escaped = CSS.escape(`Follow @${handle}`);
   const followBtn = document.querySelector(`[data-testid="placementTracking"] [role="button"], [aria-label="${escaped}"]`);
@@ -186,10 +157,6 @@ async function actionFollowUser(params = {}) {
 }
 
 async function actionRetweet(params = {}) {
-  const postUrl = params.post_url || "";
-
-  await navigateToPost(postUrl);
-
   const retweetBtn = document.querySelector('[data-testid="retweet"]');
   if (!retweetBtn) return { status: "error", error: "Retweet button not found" };
 
@@ -205,13 +172,7 @@ async function actionRetweet(params = {}) {
   return { status: "ok" };
 }
 
-async function actionNavigate(params = {}) {
-  const url = params.url || "";
-  if (!url) throw new Error("No URL provided");
-  window.location.href = url;
-  await sleep(randomBetween(2000, 4000));
-  return { status: "ok" };
-}
+// actionNavigate is handled entirely by background.js via chrome.tabs.update
 
 async function actionScroll(params = {}) {
   const count = params.count || 1;
@@ -219,25 +180,7 @@ async function actionScroll(params = {}) {
   return { status: "ok" };
 }
 
-async function actionSessionWarmup() {
-  for (let i = 0; i < randomBetween(2, 5); i++) {
-    await smoothScrollDown(1);
-    await sleep(randomBetween(2000, 6000));
-  }
-
-  if (Math.random() < 0.5) {
-    window.location.href = "https://x.com/notifications";
-    await sleep(randomBetween(3000, 8000));
-    for (let i = 0; i < randomBetween(1, 3); i++) {
-      await smoothScrollDown(1);
-      await sleep(randomBetween(2000, 4000));
-    }
-  }
-
-  window.location.href = "https://x.com/home";
-  await sleep(randomBetween(2000, 5000));
-  return { status: "ok" };
-}
+// actionSessionWarmup is handled by background.js (scroll via content + navigate via tabs API)
 
 async function actionLurkScroll(params = {}) {
   const count = params.count || randomBetween(3, 8);
