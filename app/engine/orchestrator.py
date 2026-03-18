@@ -99,8 +99,12 @@ class Orchestrator:
     def cancel(self):
         self._cancelled = True
 
+    _SLOW_COMMANDS = {"post_tweet", "post_comment", "post_thread", "quote_tweet", "session_warmup"}
+
     async def _cmd(self, cmd: str, timeout: float = 60.0, **params) -> dict:
         """Send a command to the extension and return the response."""
+        if cmd in self._SLOW_COMMANDS and timeout <= 60.0:
+            timeout = 180.0
         return await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
 
     def _enabled_topics(self) -> list[str]:

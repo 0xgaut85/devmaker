@@ -8,26 +8,30 @@
 
 async function actionPostTweet(params = {}) {
   const text = params.text || "";
-  const imageUrls = params.image_urls || [];
 
-  const composeBtn = document.querySelector('[data-testid="SideNav_NewTweet_Button"]');
+  // Try sidebar compose button first, then floating action button
+  let composeBtn = document.querySelector('[data-testid="SideNav_NewTweet_Button"]');
+  if (!composeBtn) composeBtn = document.querySelector('[data-testid="tweetButton"]');
+  if (!composeBtn) composeBtn = document.querySelector('a[href="/compose/post"]');
   if (composeBtn) {
     await humanClick(composeBtn);
-    await sleep(randomBetween(1000, 2000));
+    await sleep(randomBetween(1500, 3000));
   }
 
-  const textbox = await waitForElement('[data-testid="tweetTextarea_0"], [role="textbox"]');
-  if (!textbox) throw new Error("Tweet textbox not found");
+  // Wait specifically for the compose dialog textbox
+  const textbox = await waitForElement('[data-testid="tweetTextarea_0"]', 8000);
+  if (!textbox) throw new Error("Tweet compose textbox not found");
 
   await humanClick(textbox);
   await sleep(randomBetween(300, 800));
   await humanType(textbox, text);
-  await sleep(randomBetween(500, 1500));
+  await sleep(randomBetween(800, 2000));
 
-  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
+  // The post button inside the compose dialog
+  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
   if (!postBtn) throw new Error("Post button not found");
 
-  await sleep(randomBetween(500, 2000));
+  await sleep(randomBetween(500, 1500));
   await humanClick(postBtn);
   await sleep(randomBetween(2000, 4000));
 
@@ -37,7 +41,7 @@ async function actionPostTweet(params = {}) {
 async function actionPostComment(params = {}) {
   const text = params.text || "";
 
-  const replyBox = await waitForElement('[data-testid="tweetTextarea_0"], [role="textbox"]');
+  const replyBox = await waitForElement('[data-testid="tweetTextarea_0"]', 8000);
   if (!replyBox) throw new Error("Reply textbox not found");
 
   await humanClick(replyBox);
