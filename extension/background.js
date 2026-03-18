@@ -22,7 +22,8 @@ function connectWs() {
     return;
   }
 
-  const url = `${wsUrl.replace(/^http/, "ws")}/ws/extension/${accountId}`;
+  const base = wsUrl.replace(/^http/, "ws").replace(/\/+$/, "");
+  const url = `${base}/ws/extension/${accountId}`;
   console.log("[DevMaker] Connecting to", url);
   ws = new WebSocket(url);
 
