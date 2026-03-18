@@ -447,11 +447,11 @@ class Orchestrator:
                 p["_topic"] = classify_topic(p.get("text", ""), enabled)
 
             on_topic = [p for p in posts if p["_topic"] in enabled]
-            if on_topic:
+            if len(on_topic) >= 3:
                 posts = on_topic
                 self.log(f"Filtered to {len(posts)} on-topic posts.")
             else:
-                self.log(f"No on-topic posts found, using all {len(posts)} posts (LLM will adapt).")
+                self.log(f"Only {len(on_topic)} on-topic posts, using all {len(posts)} posts (LLM will adapt).")
 
             if len(posts) < 3:
                 self.log("ERROR: Not enough posts.")
