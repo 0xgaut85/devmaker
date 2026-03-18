@@ -315,7 +315,6 @@ async function actionDismissCompose() {
     }
     await sleep(150);
   }
-  window.onbeforeunload = null;
   return { status: "ok" };
 }
 
