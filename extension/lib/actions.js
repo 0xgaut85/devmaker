@@ -17,10 +17,32 @@ function _withTimeout(fn, label) {
   ]);
 }
 
-function _verifyDialogClosed(label) {
-  const stillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
-  if (stillOpen && (stillOpen.closest('[role="dialog"]') || getTextboxContent(stillOpen).length > 0)) {
-    throw new Error(`${label} failed: compose dialog still open after submit`);
+function _isComposeStillActive() {
+  const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
+  if (!textarea) return false;
+  if (textarea.closest('[role="dialog"]')) return true;
+  if (getTextboxContent(textarea).length > 0) return true;
+  return false;
+}
+
+async function _submitAndVerify(label) {
+  const postBtn = document.querySelector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
+  if (!postBtn) throw new Error(`${label}: Post button not found`);
+
+  await humanClick(postBtn);
+  await sleep(randomBetween(2500, 4500));
+
+  if (!_isComposeStillActive()) return;
+
+  console.log(`[DevMaker] ${label}: compose still active after click, retrying...`);
+  const retryBtn = document.querySelector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
+  if (retryBtn) {
+    await humanClick(retryBtn);
+    await sleep(randomBetween(3000, 5000));
+  }
+
+  if (_isComposeStillActive()) {
+    throw new Error(`${label} failed: compose still open after 2 submit attempts`);
   }
 }
 
@@ -63,22 +85,9 @@ async function _doPostTweet(params = {}) {
     throw new Error(`Typed content truncated: expected ${expected.length} chars, got ${actual.length}`);
   }
 
-  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
-  if (!postBtn) throw new Error("Post button not found");
-
+  await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
   await sleep(randomBetween(500, 1500));
-  await humanClick(postBtn);
-  await sleep(randomBetween(2000, 4000));
-
-  const dialogStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
-  if (dialogStillOpen && dialogStillOpen.closest('[role="dialog"]')) {
-    const retryBtn = document.querySelector('[data-testid="tweetButton"]');
-    if (retryBtn) {
-      await humanClick(retryBtn);
-      await sleep(randomBetween(3000, 5000));
-    }
-    _verifyDialogClosed("post_tweet");
-  }
+  await _submitAndVerify("post_tweet");
 
   return { status: "ok" };
 }
@@ -109,22 +118,9 @@ async function _doPostComment(params = {}) {
     throw new Error(`Reply truncated: expected ${trimmed.length} chars, got ${actual.length}`);
   }
 
-  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 8000);
-  if (!postBtn) throw new Error("Reply post button not found");
-
+  await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 8000);
   await sleep(randomBetween(500, 2000));
-  await humanClick(postBtn);
-  await sleep(randomBetween(2000, 4000));
-
-  const replyStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
-  if (replyStillOpen && (replyStillOpen.closest('[role="dialog"]') || getTextboxContent(replyStillOpen).length > 0)) {
-    const retryBtn = document.querySelector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
-    if (retryBtn) {
-      await humanClick(retryBtn);
-      await sleep(randomBetween(3000, 5000));
-    }
-    _verifyDialogClosed("post_comment");
-  }
+  await _submitAndVerify("post_comment");
 
   return { status: "ok" };
 }
@@ -215,22 +211,9 @@ async function _doQuoteTweet(params = {}) {
     throw new Error(`Quote text truncated: expected ${trimmed.length} chars, got ${actual.length}`);
   }
 
-  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
-  if (!postBtn) throw new Error("Quote post button not found");
-
+  await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
   await sleep(randomBetween(500, 1500));
-  await humanClick(postBtn);
-  await sleep(randomBetween(2000, 4000));
-
-  const quoteStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
-  if (quoteStillOpen && quoteStillOpen.closest('[role="dialog"]')) {
-    const retryBtn = document.querySelector('[data-testid="tweetButton"]');
-    if (retryBtn) {
-      await humanClick(retryBtn);
-      await sleep(randomBetween(3000, 5000));
-    }
-    _verifyDialogClosed("quote_tweet");
-  }
+  await _submitAndVerify("quote_tweet");
 
   return { status: "ok" };
 }
