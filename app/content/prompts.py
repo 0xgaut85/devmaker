@@ -16,6 +16,76 @@ def _voice_block(voice: str) -> str:
     return voice.strip()
 
 
+def _personality_block(cfg: dict) -> str:
+    """Convert 0-10 personality sliders into natural language instructions."""
+    traits = []
+
+    h = cfg.get("personality_humor", 5)
+    if h >= 7:
+        traits.append("You're witty and funny — use humor, wordplay, and jokes often.")
+    elif h <= 3:
+        traits.append("You're serious and direct — humor is rare for you.")
+
+    s = cfg.get("personality_sarcasm", 3)
+    if s >= 7:
+        traits.append("You're heavily sarcastic — dry wit, ironic remarks, tongue-in-cheek.")
+    elif s <= 2:
+        traits.append("You're earnest and genuine — never sarcastic.")
+
+    c = cfg.get("personality_confidence", 6)
+    if c >= 7:
+        traits.append("You're bold and assertive — strong opinions, no hedging.")
+    elif c <= 3:
+        traits.append("You're humble and measured — you acknowledge uncertainty.")
+
+    w = cfg.get("personality_warmth", 5)
+    if w >= 7:
+        traits.append("You're warm and encouraging — supportive, friendly, use emojis occasionally.")
+    elif w <= 3:
+        traits.append("You're detached and cool — no cheeriness, no emojis.")
+
+    ct = cfg.get("personality_controversy", 3)
+    if ct >= 7:
+        traits.append("You're provocative — you enjoy hot takes and challenging the consensus.")
+    elif ct <= 2:
+        traits.append("You're non-controversial — stick to safe, agreeable positions.")
+
+    i = cfg.get("personality_intellect", 5)
+    if i >= 7:
+        traits.append("You're analytical and deep — reference data, cite specifics, think in systems.")
+    elif i <= 3:
+        traits.append("You keep it simple and casual — no jargon, no overthinking.")
+
+    b = cfg.get("personality_brevity", 5)
+    if b >= 7:
+        traits.append("You're extremely concise — one-liners, punchy. Under 100 chars when possible.")
+    elif b <= 3:
+        traits.append("You like to elaborate — give full context and detail.")
+
+    e = cfg.get("personality_edginess", 3)
+    if e >= 7:
+        traits.append("You're edgy and raw — blunt, unfiltered language, zero corporate polish.")
+    elif e <= 2:
+        traits.append("You're wholesome and clean — no crude language.")
+
+    if not traits:
+        return ""
+    return "PERSONALITY TRAITS:\n" + "\n".join(f"- {t}" for t in traits) + "\n"
+
+
+def _topics_block(enabled_topics: list[str]) -> str:
+    """Tell the LLM which topics are allowed."""
+    if not enabled_topics:
+        return ""
+    topics_str = ", ".join(enabled_topics[:20])
+    return (
+        f"ALLOWED TOPICS: {topics_str}\n"
+        f"IMPORTANT: Only write about these topics. If the source tweet is off-topic "
+        f"(e.g. relationships, memes unrelated to your topics, gossip, influencer drama), "
+        f"adapt it to one of YOUR topics instead. Never produce off-topic content.\n"
+    )
+
+
 def _examples_block(bad: str, good: str) -> str:
     parts = []
     if bad.strip():
@@ -61,14 +131,17 @@ def build_tweet_rephrase_prompt(
     voice: str, bad_examples: str, good_examples: str,
     format_key: str, original_tweet: str,
     recent_posts: list[str] | None = None,
+    cfg: dict | None = None,
+    enabled_topics: list[str] | None = None,
 ) -> tuple[str, str]:
+    cfg = cfg or {}
     fmt = FORMAT_CATALOG[format_key]
     system = f"""You are writing social media posts for X (Twitter).
 
 VOICE — write exactly like this person:
 {_voice_block(voice)}
 
-{GRAMMAR_RULES}
+{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{GRAMMAR_RULES}
 
 {ANTI_SLOP_RULES}
 
@@ -97,13 +170,16 @@ Your rephrased version:"""
 def build_quote_comment_prompt(
     voice: str, bad_examples: str, good_examples: str,
     original_tweet: str, recent_posts: list[str] | None = None,
+    cfg: dict | None = None,
+    enabled_topics: list[str] | None = None,
 ) -> tuple[str, str]:
+    cfg = cfg or {}
     system = f"""You are writing a quote retweet comment for X (Twitter).
 
 VOICE — write exactly like this person:
 {_voice_block(voice)}
 
-{GRAMMAR_RULES}
+{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{GRAMMAR_RULES}
 
 {ANTI_SLOP_RULES}
 
@@ -133,7 +209,10 @@ def build_reply_comment_prompt(
     post_type: str = "", reply_strategy: str = "",
     existing_replies: list[str] | None = None,
     positions: list[dict] | None = None,
+    cfg: dict | None = None,
+    enabled_topics: list[str] | None = None,
 ) -> tuple[str, str]:
+    cfg = cfg or {}
     tier = LENGTH_TIERS[length_tier]
     post_type_block = ""
     if post_type and reply_strategy:
@@ -144,7 +223,7 @@ def build_reply_comment_prompt(
 VOICE — write exactly like this person:
 {_voice_block(voice)}
 
-{GRAMMAR_RULES}
+{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{GRAMMAR_RULES}
 
 {ANTI_SLOP_RULES}
 
@@ -373,14 +452,17 @@ def build_thread_prompt(
     voice: str, bad_examples: str, good_examples: str,
     thread_format_key: str, original_tweet: str,
     recent_posts: list[str] | None = None,
+    cfg: dict | None = None,
+    enabled_topics: list[str] | None = None,
 ) -> tuple[str, str]:
+    cfg = cfg or {}
     fmt = THREAD_FORMAT_CATALOG[thread_format_key]
     system = f"""You are writing a Twitter/X thread (multiple connected tweets).
 
 VOICE — write exactly like this person:
 {_voice_block(voice)}
 
-{GRAMMAR_RULES}
+{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{GRAMMAR_RULES}
 
 {ANTI_SLOP_RULES}
 

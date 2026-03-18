@@ -105,11 +105,11 @@ class Orchestrator:
 
     def _enabled_topics(self) -> list[str]:
         topics = self.cfg.get("topics", {})
-        return [t for t, enabled in topics.items() if enabled]
+        return [t for t, w in topics.items() if w]
 
     def _enabled_degen_topics(self) -> list[str]:
         topics = self.cfg.get("degen_topics", {})
-        return [t for t, enabled in topics.items() if enabled]
+        return [t for t, w in topics.items() if w]
 
     def _active_api_key(self) -> str:
         if self.cfg.get("llm_provider") == "anthropic":
@@ -388,18 +388,25 @@ class Orchestrator:
             self.log("Scraping timeline...")
             resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5)
             posts = resp.get("data", [])
-            self.log(f"Found {len(posts)} posts.")
+            self.log(f"Found {len(posts)} posts (raw).")
 
             if len(posts) < 8:
                 resp = await self._cmd("scrape_timeline", min_likes=20, max_posts=30, scroll_count=3)
                 posts = resp.get("data", [])
 
+            for p in posts:
+                p["_topic"] = classify_topic(p.get("text", ""), enabled)
+
+            on_topic = [p for p in posts if p["_topic"] in enabled]
+            if on_topic:
+                posts = on_topic
+                self.log(f"Filtered to {len(posts)} on-topic posts.")
+            else:
+                self.log(f"No on-topic posts found, using all {len(posts)} posts (LLM will adapt).")
+
             if len(posts) < 3:
                 self.log("ERROR: Not enough posts.")
                 return False
-
-            for p in posts:
-                p["_topic"] = classify_topic(p.get("text", ""), enabled)
 
             if self._cancelled:
                 return False
@@ -428,6 +435,7 @@ class Orchestrator:
                     generate_tweet, cfg=self.cfg,
                     format_key=format_key, original_tweet=tweet_post["text"],
                     length_tier=random.choice(["SHORT", "MEDIUM", "LONG"]),
+                    enabled_topics=enabled,
                 )
 
                 if tweet_text:
@@ -470,6 +478,7 @@ class Orchestrator:
                 quote_comment = await self._generate_with_dedup(
                     generate_quote_comment, cfg=self.cfg,
                     original_tweet=qrt_post["text"],
+                    enabled_topics=enabled,
                 )
                 if quote_comment:
                     await self._cmd("quote_tweet", post_url=qrt_post["url"], text=quote_comment)
@@ -525,6 +534,7 @@ class Orchestrator:
                     original_tweet=cp["text"], length_tier=length, tone=tone,
                     post_type=ptype, reply_strategy=pstrategy,
                     existing_replies=existing_replies, positions=positions,
+                    enabled_topics=enabled,
                 )
                 if comment_text:
                     await self._cmd("post_comment", post_url=cp["url"], text=comment_text)
@@ -544,6 +554,7 @@ class Orchestrator:
                 thread_tweets = generate_thread(
                     cfg=self.cfg, thread_format_key=thread_format,
                     original_tweet=posts[0]["text"], recent_posts=self._recent_posts(),
+                    enabled_topics=enabled,
                 )
                 if thread_tweets:
                     await self._cmd("post_thread", tweets=thread_tweets)
@@ -901,6 +912,7 @@ class Orchestrator:
                         original_tweet=p["text"], length_tier=length, tone=tone,
                         post_type=ptype, reply_strategy=pstrategy,
                         existing_replies=existing_replies, positions=positions,
+                        enabled_topics=self._enabled_topics(),
                     )
                     if comment_text:
                         await self._cmd("post_comment", post_url=p["url"], text=comment_text)

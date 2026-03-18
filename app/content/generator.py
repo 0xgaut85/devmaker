@@ -98,7 +98,8 @@ def _call_llm_with_image(cfg: dict, system: str, user: str, image_b64: str, mime
 
 
 def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
-                   length_tier: str = "MEDIUM", recent_posts: list[str] | None = None) -> str:
+                   length_tier: str = "MEDIUM", recent_posts: list[str] | None = None,
+                   enabled_topics: list[str] | None = None) -> str:
     system, user = build_tweet_rephrase_prompt(
         voice=cfg.get("voice_description", ""),
         bad_examples=cfg.get("bad_examples", ""),
@@ -106,6 +107,8 @@ def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
         format_key=format_key,
         original_tweet=original_tweet,
         recent_posts=recent_posts,
+        cfg=cfg,
+        enabled_topics=enabled_topics,
     )
     result = None
     for _ in range(MAX_RETRIES):
@@ -117,13 +120,16 @@ def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
 
 
 def generate_quote_comment(cfg: dict, original_tweet: str,
-                           recent_posts: list[str] | None = None) -> str:
+                           recent_posts: list[str] | None = None,
+                           enabled_topics: list[str] | None = None) -> str:
     system, user = build_quote_comment_prompt(
         voice=cfg.get("voice_description", ""),
         bad_examples=cfg.get("bad_examples", ""),
         good_examples=cfg.get("good_examples", ""),
         original_tweet=original_tweet,
         recent_posts=recent_posts,
+        cfg=cfg,
+        enabled_topics=enabled_topics,
     )
     result = None
     for _ in range(MAX_RETRIES):
@@ -138,7 +144,8 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
                            recent_posts: list[str] | None = None,
                            post_type: str = "", reply_strategy: str = "",
                            existing_replies: list[str] | None = None,
-                           positions: list[dict] | None = None) -> str:
+                           positions: list[dict] | None = None,
+                           enabled_topics: list[str] | None = None) -> str:
     system, user = build_reply_comment_prompt(
         voice=cfg.get("voice_description", ""),
         bad_examples=cfg.get("bad_examples", ""),
@@ -148,6 +155,8 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
         recent_posts=recent_posts,
         post_type=post_type, reply_strategy=reply_strategy,
         existing_replies=existing_replies, positions=positions,
+        cfg=cfg,
+        enabled_topics=enabled_topics,
     )
     result = None
     for _ in range(MAX_RETRIES):
@@ -260,7 +269,8 @@ def generate_degen_reply_comment(cfg: dict, original_tweet: str, length_tier: st
 
 
 def generate_thread(cfg: dict, thread_format_key: str, original_tweet: str,
-                    recent_posts: list[str] | None = None) -> list[str] | None:
+                    recent_posts: list[str] | None = None,
+                    enabled_topics: list[str] | None = None) -> list[str] | None:
     system, user = build_thread_prompt(
         voice=cfg.get("voice_description", ""),
         bad_examples=cfg.get("bad_examples", ""),
@@ -268,6 +278,8 @@ def generate_thread(cfg: dict, thread_format_key: str, original_tweet: str,
         thread_format_key=thread_format_key,
         original_tweet=original_tweet,
         recent_posts=recent_posts,
+        cfg=cfg,
+        enabled_topics=enabled_topics,
     )
     for _ in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
