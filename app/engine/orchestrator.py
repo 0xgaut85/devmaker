@@ -109,7 +109,7 @@ def classify_topic(text: str, enabled_topics: list[str], keyword_map: dict | Non
             scores[topic] = score
     if scores:
         return max(scores, key=scores.get)
-    return random.choice(enabled_topics) if enabled_topics else "General"
+    return ""
 
 
 class Orchestrator:
@@ -475,12 +475,15 @@ class Orchestrator:
                 if self._cancelled:
                     return False
 
-                # Pick next unused post — NEVER reuse a URL within the same sequence
-                available = [p for p in post_pool if p.get("url") not in used_urls]
-                if not available:
-                    self.log(f"[{action.upper()}] Skipped — no unused posts left.")
-                    continue
-                post = available[0]
+                # follow doesn't need a post from the pool
+                if action == "follow":
+                    pass
+                else:
+                    available = [p for p in post_pool if p.get("url") not in used_urls]
+                    if not available:
+                        self.log(f"[{action.upper()}] Skipped — no unused posts left.")
+                        continue
+                    post = available[0]
 
                 if action == "tweet":
                     topic_post = self._pick_post(available, self._next_topic(enabled)) or post
@@ -593,18 +596,23 @@ class Orchestrator:
                 elif action == "thread":
                     self.log("[Thread] Generating thread...")
                     thread_format = self._next_thread_format()
+                    recent = self._recent_posts()
                     thread_tweets = generate_thread(
                         cfg=self.cfg, thread_format_key=thread_format,
-                        original_tweet=post["text"], recent_posts=self._recent_posts(),
+                        original_tweet=post["text"], recent_posts=recent,
                         enabled_topics=enabled,
                     )
                     if thread_tweets:
-                        await self._cmd("post_thread", tweets=thread_tweets)
-                        self.log(f"[Thread] Posted {len(thread_tweets)}-tweet thread.")
-                        self._record_action("tweets")
-                        self.state["thread_last_format"] = thread_format
-                        for t in thread_tweets:
-                            self._record_posted_text(t)
+                        # Check the hook tweet (first one) isn't too similar to recent posts
+                        if is_too_similar(thread_tweets[0], recent):
+                            self.log("[Thread] Skipped — hook too similar to recent posts.")
+                        else:
+                            await self._cmd("post_thread", tweets=thread_tweets)
+                            self.log(f"[Thread] Posted {len(thread_tweets)}-tweet thread.")
+                            self._record_action("tweets")
+                            self.state["thread_last_format"] = thread_format
+                            for t in thread_tweets:
+                                self._record_posted_text(t)
 
                 # Organic pause between actions (like a real person browsing)
                 if random.random() < 0.4:
@@ -717,16 +725,12 @@ class Orchestrator:
 
             tweet_topic = ""
             tweet_handle = ""
+            used_urls = set(self.state.get("recent_source_urls", []))
 
             # 1. DEGEN TWEET
             if self._can_act("tweets"):
-                tweet_post = posts[0]
-                source_urls = self.state.get("recent_source_urls", [])
-                if tweet_post.get("url") in source_urls:
-                    for p in posts[1:]:
-                        if p.get("url") not in source_urls:
-                            tweet_post = p
-                            break
+                tweet_post = next((p for p in posts if p.get("url") not in used_urls), posts[0])
+                used_urls.add(tweet_post.get("url", ""))
 
                 tweet_topic = classify_topic(tweet_post["text"], enabled, DEGEN_TOPIC_KEYWORDS)
                 tweet_handle = tweet_post.get("handle", "")
@@ -748,6 +752,7 @@ class Orchestrator:
             else:
                 tweet_post = posts[0]
                 tweet_handle = tweet_post.get("handle", "")
+                used_urls.add(tweet_post.get("url", ""))
 
             if self._cancelled:
                 return False
@@ -755,19 +760,24 @@ class Orchestrator:
 
             # 2. DEGEN QRT
             if self._can_act("qrts"):
-                qrt_post = next((p for p in posts[1:] if p.get("handle") != tweet_handle), posts[1] if len(posts) > 1 else posts[0])
-                self.log(f"[Degen QRT] Quoting @{qrt_post.get('handle')}")
-                await self._cmd("navigate", url=qrt_post["url"])
-                await self._like_and_bookmark(qrt_post["url"])
+                qrt_candidates = [p for p in posts if p.get("url") not in used_urls and p.get("handle") != tweet_handle]
+                if qrt_candidates:
+                    qrt_post = qrt_candidates[0]
+                    used_urls.add(qrt_post.get("url", ""))
+                    self.log(f"[Degen QRT] Quoting @{qrt_post.get('handle')}")
+                    await self._cmd("navigate", url=qrt_post["url"])
+                    await self._like_and_bookmark(qrt_post["url"])
 
-                quote_text = await self._generate_with_dedup(
-                    generate_degen_quote_comment, cfg=self.cfg,
-                    original_tweet=qrt_post["text"],
-                )
-                if quote_text:
-                    await self._cmd("quote_tweet", post_url=qrt_post["url"], text=quote_text)
-                    self._record_action("qrts")
-                    self._record_posted_text(quote_text)
+                    quote_text = await self._generate_with_dedup(
+                        generate_degen_quote_comment, cfg=self.cfg,
+                        original_tweet=qrt_post["text"],
+                    )
+                    if quote_text:
+                        await self._cmd("quote_tweet", post_url=qrt_post["url"], text=quote_text)
+                        self._record_action("qrts")
+                        self._record_posted_text(quote_text)
+                else:
+                    self.log("[Degen QRT] Skipped — no unused posts.")
 
             if self._cancelled:
                 return False
@@ -775,14 +785,14 @@ class Orchestrator:
 
             # 3. DEGEN COMMENTS
             num_comments = random.randint(3, 5)
-            used = {tweet_handle}
-            comment_posts = [p for p in posts if p.get("handle") not in used][:num_comments]
+            comment_posts = [p for p in posts if p.get("url") not in used_urls][:num_comments]
 
             for i, cp in enumerate(comment_posts):
                 if self._cancelled:
                     return False
                 if not self._can_act("comments"):
                     break
+                used_urls.add(cp.get("url", ""))
                 length = comment_rotation[i] if i < len(comment_rotation) else "MEDIUM"
                 tone = self._next_tone(i + seq_num)
                 ptype, pstrategy, _ = self._classify_post(cp["text"])

@@ -125,8 +125,8 @@ async function scrapeTimeline(params = {}) {
         }
       } catch {}
     }
-    window.scrollBy(0, window.innerHeight * 2);
-    await sleep(2000);
+    await humanScroll(window.innerHeight * randomBetween(1.5, 2.5));
+    await sleep(randomBetween(1500, 3000));
   }
 
   if (sortBy === "virality") {
@@ -142,7 +142,8 @@ async function scrapeReplies(params = {}) {
   const replies = [];
   const articles = document.querySelectorAll('article[data-testid="tweet"]');
 
-  for (let i = 0; i < Math.min(articles.length, maxReplies + 3); i++) {
+  // Skip index 0 — that's the original post, not a reply
+  for (let i = 1; i < Math.min(articles.length, maxReplies + 4); i++) {
     if (replies.length >= maxReplies) break;
     try {
       const article = articles[i];
@@ -222,8 +223,8 @@ async function scrapeRetweets(params = {}) {
       staleRounds = 0;
     }
 
-    window.scrollBy(0, window.innerHeight * 2);
-    await sleep(1500);
+    await humanScroll(window.innerHeight * randomBetween(1.5, 2.5));
+    await sleep(randomBetween(1200, 2500));
   }
 
   rtUrls.reverse();
@@ -255,6 +256,4 @@ async function scrapePerformance(params = {}) {
   return results;
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+// sleep, humanScroll, randomBetween are provided by human.js (loaded first)

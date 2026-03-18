@@ -110,13 +110,12 @@ def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
         cfg=cfg,
         enabled_topics=enabled_topics,
     )
-    result = None
     for _ in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, length_tier)
         if result.passed:
             return result.text
-    return result.text
+    return None
 
 
 def generate_quote_comment(cfg: dict, original_tweet: str,
@@ -131,13 +130,12 @@ def generate_quote_comment(cfg: dict, original_tweet: str,
         cfg=cfg,
         enabled_topics=enabled_topics,
     )
-    result = None
     for _ in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, "SHORT")
         if result.passed:
             return result.text
-    return result.text
+    return None
 
 
 def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, tone: str,
@@ -158,13 +156,12 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
         cfg=cfg,
         enabled_topics=enabled_topics,
     )
-    result = None
     for _ in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, length_tier)
         if result.passed:
             return result.text
-    return result.text
+    return None
 
 
 def _is_safe_project_comment(text: str) -> bool:
@@ -220,13 +217,12 @@ def generate_degen_tweet(cfg: dict, format_key: str, original_tweet: str,
         cfg.get("degen_do", ""), cfg.get("degen_dont", ""),
         recent_posts=recent_posts,
     )
-    result = None
     for _ in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, "MEDIUM")
         if result.passed:
             return result.text
-    return result.text
+    return None
 
 
 def generate_degen_quote_comment(cfg: dict, original_tweet: str,
@@ -237,13 +233,12 @@ def generate_degen_quote_comment(cfg: dict, original_tweet: str,
         cfg.get("degen_do", ""), cfg.get("degen_dont", ""),
         recent_posts=recent_posts,
     )
-    result = None
     for _ in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, "SHORT")
         if result.passed:
             return result.text
-    return result.text
+    return None
 
 
 def generate_degen_reply_comment(cfg: dict, original_tweet: str, length_tier: str, tone: str,
@@ -259,13 +254,12 @@ def generate_degen_reply_comment(cfg: dict, original_tweet: str, length_tier: st
         post_type=post_type, reply_strategy=reply_strategy,
         existing_replies=existing_replies, positions=positions,
     )
-    result = None
     for _ in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, length_tier)
         if result.passed:
             return result.text
-    return result.text
+    return None
 
 
 def generate_thread(cfg: dict, thread_format_key: str, original_tweet: str,
