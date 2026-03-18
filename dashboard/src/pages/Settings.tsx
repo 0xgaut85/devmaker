@@ -88,6 +88,10 @@ export default function Settings() {
           <TextArea label="Don't" value={config.project_dont} onChange={(v) => update("project_dont", v)} />
           <Number label="Comments per Sequence" value={config.project_timeline_comments} onChange={(v) => update("project_timeline_comments", v)} />
           <Number label="Min Likes" value={config.project_timeline_min_likes} onChange={(v) => update("project_timeline_min_likes", v)} />
+          <div className="pt-2">
+            <label className="text-xs text-neutral-400 block mb-2">Project Categories</label>
+            <TopicsEditor value={config.project_categories || {}} onChange={(v) => update("project_categories", v)} />
+          </div>
         </Section>
 
         <Section title="RT Farm">
