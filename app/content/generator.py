@@ -97,6 +97,46 @@ def _call_llm_with_image(cfg: dict, system: str, user: str, image_b64: str, mime
         return response.choices[0].message.content
 
 
+def _call_llm_with_images_for_generation(
+    cfg: dict, system: str, user: str,
+    images: list[tuple[str, str]],
+) -> str:
+    """Call the LLM with text + images for full generation (1024 tokens)."""
+    if not images:
+        return _call_llm(cfg, system, user)
+    content = []
+    for b64, mime in images:
+        if cfg.get("llm_provider") == "anthropic":
+            content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}})
+        else:
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+    content.append({"type": "text", "text": user})
+
+    if cfg.get("llm_provider") == "anthropic":
+        import anthropic
+        client = anthropic.Anthropic(api_key=cfg.get("anthropic_api_key", ""))
+        response = client.messages.create(
+            model=_active_model(cfg),
+            max_tokens=1024,
+            system=system,
+            messages=[{"role": "user", "content": content}],
+        )
+        return response.content[0].text
+    else:
+        import openai
+        client = openai.OpenAI(api_key=cfg.get("openai_api_key", ""))
+        response = client.chat.completions.create(
+            model=_active_model(cfg),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
+            max_tokens=1024,
+            temperature=0.9,
+        )
+        return response.choices[0].message.content
+
+
 def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
                    length_tier: str = "MEDIUM", recent_posts: list[str] | None = None,
                    enabled_topics: list[str] | None = None) -> str:
@@ -120,7 +160,9 @@ def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
 
 def generate_quote_comment(cfg: dict, original_tweet: str,
                            recent_posts: list[str] | None = None,
-                           enabled_topics: list[str] | None = None) -> str:
+                           enabled_topics: list[str] | None = None,
+                           image_b64_list: list[tuple[str, str]] | None = None) -> str:
+    images = image_b64_list or []
     system, user = build_quote_comment_prompt(
         voice=cfg.get("voice_description", ""),
         bad_examples=cfg.get("bad_examples", ""),
@@ -129,9 +171,11 @@ def generate_quote_comment(cfg: dict, original_tweet: str,
         recent_posts=recent_posts,
         cfg=cfg,
         enabled_topics=enabled_topics,
+        has_images=bool(images),
     )
+    call_fn = lambda: _call_llm_with_images_for_generation(cfg, system, user, images) if images else _call_llm(cfg, system, user)
     for _ in range(MAX_RETRIES):
-        raw = _call_llm(cfg, system, user)
+        raw = call_fn()
         result = validate_and_fix(raw, "SHORT")
         if result.passed:
             return result.text
@@ -143,7 +187,9 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
                            post_type: str = "", reply_strategy: str = "",
                            existing_replies: list[str] | None = None,
                            positions: list[dict] | None = None,
-                           enabled_topics: list[str] | None = None) -> str:
+                           enabled_topics: list[str] | None = None,
+                           image_b64_list: list[tuple[str, str]] | None = None) -> str:
+    images = image_b64_list or []
     system, user = build_reply_comment_prompt(
         voice=cfg.get("voice_description", ""),
         bad_examples=cfg.get("bad_examples", ""),
@@ -155,9 +201,11 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
         existing_replies=existing_replies, positions=positions,
         cfg=cfg,
         enabled_topics=enabled_topics,
+        has_images=bool(images),
     )
+    call_fn = lambda: _call_llm_with_images_for_generation(cfg, system, user, images) if images else _call_llm(cfg, system, user)
     for _ in range(MAX_RETRIES):
-        raw = _call_llm(cfg, system, user)
+        raw = call_fn()
         result = validate_and_fix(raw, length_tier)
         if result.passed:
             return result.text

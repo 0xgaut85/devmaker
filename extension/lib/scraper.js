@@ -107,13 +107,17 @@ function extractPost(article) {
 async function scrapeTimeline(params = {}) {
   const minLikes = params.min_likes || 100;
   const maxPosts = params.max_posts || 30;
-  const scrollCount = params.scroll_count || 5;
+  const scrollCount = Math.min(params.scroll_count || 5, 4);
   const sortBy = params.sort_by || "likes";
+  const maxTime = 45000;
 
   const posts = [];
   const seenUrls = new Set();
+  const start = Date.now();
 
   for (let s = 0; s < scrollCount; s++) {
+    if (Date.now() - start > maxTime) break;
+
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
     for (const article of articles) {
       if (posts.length >= maxPosts) break;
@@ -125,8 +129,8 @@ async function scrapeTimeline(params = {}) {
         }
       } catch {}
     }
-    await humanScroll(window.innerHeight * randomBetween(1.5, 2.5));
-    await sleep(randomBetween(1500, 3000));
+    window.scrollBy({ top: window.innerHeight * 1.5, behavior: "auto" });
+    await sleep(800 + Math.random() * 700);
   }
 
   if (sortBy === "virality") {

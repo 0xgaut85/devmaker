@@ -20,7 +20,20 @@ chrome.storage.local.get(["backendUrl", "accountId"], (data) => {
   }
 });
 
+async function dismissComposeBeforeNav(tabId) {
+  try {
+    await Promise.race([
+      sendToContent(tabId, "dismiss_compose", {}),
+      new Promise((r) => setTimeout(r, 5000)),
+    ]);
+  } catch {
+    // Content script may not be ready; continue with nav anyway
+  }
+  await new Promise((r) => setTimeout(r, 400));
+}
+
 async function navigateTab(tabId, url) {
+  await dismissComposeBeforeNav(tabId);
   await chrome.tabs.update(tabId, { url });
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
@@ -112,12 +125,18 @@ function connectWs() {
 
       // --- scrape_timeline: ensure we're on /home, then click Following tab if requested ---
       if (cmd === "scrape_timeline") {
-        await ensureHomePage(tab.id);
-        if (params.use_following_tab) {
-          try {
-            await sendToContent(tab.id, "click_following_tab", {});
-          } catch {}
-        }
+        const scrapeSetup = async () => {
+          await ensureHomePage(tab.id);
+          if (params.use_following_tab) {
+            try {
+              await Promise.race([
+                sendToContent(tab.id, "click_following_tab", {}),
+                new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 15000)),
+              ]);
+            } catch {}
+          }
+        };
+        await Promise.race([scrapeSetup(), new Promise((r) => setTimeout(r, 30000))]);
       }
 
       // --- action commands with post_url: navigate to the post first ---

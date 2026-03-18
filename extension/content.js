@@ -20,6 +20,7 @@ const COMMAND_HANDLERS = {
   retweet: async (params) => await actionRetweet(params),
 
   // navigate and session_warmup are handled by background.js
+  dismiss_compose: async () => await actionDismissCompose(),
   click_following_tab: async () => await actionClickFollowingTab(),
   scroll: async (params) => await actionScroll(params),
   lurk_scroll: async (params) => await actionLurkScroll(params),

@@ -14,6 +14,7 @@ from app.content.generator import (
     classify_post_with_llm, extract_position,
     check_image_relevance_with_vision,
 )
+from app.content.images import fetch_images_as_base64
 from app.content.position_memory import record_position, get_relevant_positions
 from app.content.validator import is_too_similar
 from app.content.rules import (
@@ -353,7 +354,7 @@ class Orchestrator:
 
     async def _scrape_reply_context(self, post_url: str) -> list[str]:
         try:
-            resp = await self._cmd("scrape_replies", post_url=post_url, max_replies=3)
+            resp = await self._cmd("scrape_replies", post_url=post_url, max_replies=6)
             replies = resp.get("data", [])
             if replies:
                 self.log(f"  [Context] Got {len(replies)} replies for vibe check.")
@@ -366,6 +367,8 @@ class Orchestrator:
         kwargs["recent_posts"] = recent
         for attempt in range(max_retries):
             text = gen_fn(**kwargs)
+            if not text:
+                return None
             if not is_too_similar(text, recent):
                 return text
             self.log(f"  [Dedup] Attempt {attempt + 1}: too similar, regenerating...")
@@ -516,10 +519,12 @@ class Orchestrator:
                     self.log(f"[QRT] Quoting @{post.get('handle')}")
                     await self._cmd("navigate", url=post["url"])
                     await self._like_and_bookmark(post["url"])
+                    image_b64_list = await fetch_images_as_base64(post.get("image_urls", []))
                     quote_comment = await self._generate_with_dedup(
                         generate_quote_comment, cfg=self.cfg,
                         original_tweet=post["text"],
                         enabled_topics=enabled,
+                        image_b64_list=image_b64_list,
                     )
                     if quote_comment:
                         try:
@@ -557,12 +562,14 @@ class Orchestrator:
                     await self._like_and_bookmark(post["url"])
                     existing_replies = await self._scrape_reply_context(post["url"])
                     positions = self._get_positions_for(post["text"])
+                    image_b64_list = await fetch_images_as_base64(post.get("image_urls", []))
                     comment_text = await self._generate_with_dedup(
                         generate_reply_comment, cfg=self.cfg,
                         original_tweet=post["text"], length_tier=length, tone=tone,
                         post_type=ptype, reply_strategy=pstrategy,
                         existing_replies=existing_replies, positions=positions,
                         enabled_topics=enabled,
+                        image_b64_list=image_b64_list,
                     )
                     if comment_text:
                         await self._cmd("post_comment", post_url=post["url"], text=comment_text)
@@ -934,6 +941,7 @@ class Orchestrator:
                     length = random.choice(["SHORT", "MEDIUM"])
                     existing_replies = await self._scrape_reply_context(p["url"])
                     positions = self._get_positions_for(p["text"])
+                    image_b64_list = await fetch_images_as_base64(p.get("image_urls", []))
 
                     comment_text = await self._generate_with_dedup(
                         generate_reply_comment, cfg=self.cfg,
@@ -941,6 +949,7 @@ class Orchestrator:
                         post_type=ptype, reply_strategy=pstrategy,
                         existing_replies=existing_replies, positions=positions,
                         enabled_topics=self._enabled_topics(),
+                        image_b64_list=image_b64_list,
                     )
                     if comment_text:
                         await self._cmd("post_comment", post_url=p["url"], text=comment_text)

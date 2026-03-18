@@ -116,6 +116,16 @@ def _positions_block(positions: list[dict] | None) -> str:
     )
 
 
+def _tone_awareness_block() -> str:
+    return """
+TONE & CONTEXT AWARENESS:
+- Detect irony, sarcasm, and humor. If the tweet is a joke, hot take, or satire, respond in kind — don't be tone-deaf or overly serious.
+- Memes and screenshots often rely on visual context. If images are provided, use them to understand the full meaning.
+- Don't agree literally with obvious sarcasm. Match the energy: playful with playful, serious with serious.
+- When someone is venting or frustrated, acknowledge the feeling before adding your take.
+"""
+
+
 def _recent_posts_block(recent_posts: list[str] | None) -> str:
     if not recent_posts:
         return ""
@@ -176,14 +186,16 @@ def build_quote_comment_prompt(
     original_tweet: str, recent_posts: list[str] | None = None,
     cfg: dict | None = None,
     enabled_topics: list[str] | None = None,
+    has_images: bool = False,
 ) -> tuple[str, str]:
     cfg = cfg or {}
+    img_note = "\n- The tweet includes images. Look at them to understand memes, screenshots, charts, or visual jokes." if has_images else ""
     system = f"""You are writing a quote retweet comment for X (Twitter).
 
 VOICE — write exactly like this person:
 {_voice_block(voice)}
 
-{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{GRAMMAR_RULES}
+{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{_tone_awareness_block()}{GRAMMAR_RULES}
 
 {ANTI_SLOP_RULES}
 
@@ -195,11 +207,12 @@ CRITICAL RULES:
 - Do NOT start with "honestly", "this is", "that's", "great point", or "so true".
 - NEVER use em dashes (— or –).
 - Add a SPECIFIC opinion, experience, or counterpoint. Include a concrete detail.
-- No vague reactions like "This hits different" or "Needed to hear this".
+- No vague reactions like "This hits different" or "Needed to hear this".{img_note}
 """
     user = f"""Write a smart quote comment that adds YOUR perspective to this tweet.
 Share a specific experience, add a concrete example, or offer a different angle.
 Generic agreement or vague reactions are NOT acceptable.
+{"Consider the images — they may contain memes, screenshots, or charts that change the meaning." if has_images else ""}
 
 Tweet being quoted:
 {original_tweet}
@@ -217,19 +230,21 @@ def build_reply_comment_prompt(
     positions: list[dict] | None = None,
     cfg: dict | None = None,
     enabled_topics: list[str] | None = None,
+    has_images: bool = False,
 ) -> tuple[str, str]:
     cfg = cfg or {}
     tier = LENGTH_TIERS[length_tier]
     post_type_block = ""
     if post_type and reply_strategy:
         post_type_block = f"\nPOST TYPE: {post_type}\nREPLY STRATEGY: {reply_strategy}\n"
+    img_note = "\n- The tweet includes images. Use them to understand memes, screenshots, charts, or visual context." if has_images else ""
 
     system = f"""You are writing a reply comment on X (Twitter).
 
 VOICE — write exactly like this person:
 {_voice_block(voice)}
 
-{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{GRAMMAR_RULES}
+{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{_tone_awareness_block()}{GRAMMAR_RULES}
 
 {ANTI_SLOP_RULES}
 
@@ -246,10 +261,11 @@ CRITICAL RULES:
 - Include at least one concrete detail (a tool, a number, a personal story, a scenario).
 - If the tone is "funny_witty", be actually funny with a specific reference, not forced.
 - If the tone is "contrarian", disagree with substance and a concrete reason.
-- Use line breaks between sentences for MEDIUM and LONG comments.
+- Use line breaks between sentences for MEDIUM and LONG comments.{img_note}
 """
     user = f"""Write a {length_tier.lower()} reply to this tweet. Add something specific and valuable.
 Share a personal experience, a concrete example, or a real opinion with supporting detail.
+{"Consider the images — they may contain memes, screenshots, or charts." if has_images else ""}
 
 Tweet:
 {original_tweet}

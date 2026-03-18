@@ -276,6 +276,49 @@ async function actionClickFollowingTab() {
 
 // actionNavigate is handled entirely by background.js via chrome.tabs.update
 
+async function actionDismissCompose() {
+  // Close compose modals and clear drafts to prevent "Leave site?" dialog on navigation
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const modal = document.querySelector('[role="dialog"]');
+    const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
+    const hasContent = textarea && (textarea.textContent || "").trim().length > 0;
+    const isInModal = textarea?.closest('[role="dialog"]');
+
+    if (modal && (hasContent || textarea)) {
+      const closeBtn = modal.querySelector('[data-testid="app-bar-close"]');
+      if (closeBtn) {
+        closeBtn.click();
+        await sleep(400);
+      }
+      const discardBtn = document.querySelector('[data-testid="confirmationSheetConfirm"]') ||
+        [...document.querySelectorAll('button, [role="button"]')].find((b) =>
+          /discard|don't save|don't keep/i.test(b.textContent || "")
+        );
+      if (discardBtn) {
+        discardBtn.click();
+        await sleep(600);
+      }
+    } else if (textarea && hasContent && !isInModal) {
+      await clearTextbox(textarea);
+      await sleep(200);
+    } else {
+      const closeBtn = document.querySelector('[data-testid="app-bar-close"]');
+      if (closeBtn) {
+        closeBtn.click();
+        await sleep(300);
+      }
+    }
+
+    document.body?.focus();
+    if (document.activeElement && document.activeElement !== document.body) {
+      document.activeElement.blur?.();
+    }
+    await sleep(150);
+  }
+  window.onbeforeunload = null;
+  return { status: "ok" };
+}
+
 async function actionScroll(params = {}) {
   const count = params.count || 1;
   await smoothScrollDown(count);
