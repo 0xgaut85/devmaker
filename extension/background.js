@@ -155,7 +155,7 @@ function connectWs() {
       // --- follow_user: navigate to profile first ---
       if (cmd === "follow_user" && params.handle) {
         const currentTab = await chrome.tabs.get(tab.id);
-        if (!currentTab.url.includes(`/${params.handle}`)) {
+        if (!currentTab.url.toLowerCase().includes(`/${params.handle.toLowerCase()}`)) {
           await navigateTab(tab.id, `https://x.com/${params.handle}`);
         }
       }

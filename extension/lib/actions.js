@@ -6,17 +6,33 @@
  * Content script functions must NEVER use window.location.href (it kills the script).
  */
 
-async function actionPostTweet(params = {}) {
+const _ACTION_TIMEOUT_MS = 120000;
+
+function _withTimeout(fn, label) {
+  return (params) => Promise.race([
+    fn(params),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out internally (120s)`)), _ACTION_TIMEOUT_MS)
+    ),
+  ]);
+}
+
+function _verifyDialogClosed(label) {
+  const stillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
+  if (stillOpen && (stillOpen.closest('[role="dialog"]') || getTextboxContent(stillOpen).length > 0)) {
+    throw new Error(`${label} failed: compose dialog still open after submit`);
+  }
+}
+
+async function _doPostTweet(params = {}) {
   const text = params.text || "";
 
-  // Dismiss any stale compose dialog first
   const existingDialog = document.querySelector('[data-testid="tweetTextarea_0"]');
   if (existingDialog && (existingDialog.textContent || "").trim().length > 0) {
     const closeBtn = document.querySelector('[data-testid="app-bar-close"], [aria-label="Close"]');
     if (closeBtn) {
       await humanClick(closeBtn);
       await sleep(randomBetween(500, 1000));
-      // Dismiss the "discard" confirmation if it appears
       const discardBtn = document.querySelector('[data-testid="confirmationSheetConfirm"]');
       if (discardBtn) {
         await humanClick(discardBtn);
@@ -25,16 +41,13 @@ async function actionPostTweet(params = {}) {
     }
   }
 
-  // Try sidebar compose button first, then floating action button
   let composeBtn = document.querySelector('[data-testid="SideNav_NewTweet_Button"]');
-  if (!composeBtn) composeBtn = document.querySelector('[data-testid="tweetButton"]');
   if (!composeBtn) composeBtn = document.querySelector('a[href="/compose/post"]');
   if (composeBtn) {
     await humanClick(composeBtn);
     await sleep(randomBetween(1500, 3000));
   }
 
-  // Wait specifically for the compose dialog textbox
   const textbox = await waitForElement('[data-testid="tweetTextarea_0"]', 8000);
   if (!textbox) throw new Error("Tweet compose textbox not found");
 
@@ -57,24 +70,24 @@ async function actionPostTweet(params = {}) {
   await humanClick(postBtn);
   await sleep(randomBetween(2000, 4000));
 
-  // Verify the compose dialog closed (meaning the post was submitted)
   const dialogStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
   if (dialogStillOpen && dialogStillOpen.closest('[role="dialog"]')) {
-    // Post button didn't work — try clicking it again
     const retryBtn = document.querySelector('[data-testid="tweetButton"]');
     if (retryBtn) {
       await humanClick(retryBtn);
       await sleep(randomBetween(3000, 5000));
     }
+    _verifyDialogClosed("post_tweet");
   }
 
   return { status: "ok" };
 }
 
-async function actionPostComment(params = {}) {
+const actionPostTweet = _withTimeout(_doPostTweet, "post_tweet");
+
+async function _doPostComment(params = {}) {
   const text = params.text || "";
 
-  // Click Reply to open the reply composer (required on post pages)
   const openReplyBtn = document.querySelector('[data-testid="reply"]');
   if (openReplyBtn) {
     await humanClick(openReplyBtn);
@@ -91,8 +104,9 @@ async function actionPostComment(params = {}) {
   await sleep(randomBetween(500, 1500));
 
   const actual = getTextboxContent(replyBox);
-  if (actual.length < text.trim().length * 0.8) {
-    throw new Error(`Reply truncated: expected ${text.length} chars, got ${actual.length}`);
+  const trimmed = text.trim();
+  if (actual.length < trimmed.length * 0.8) {
+    throw new Error(`Reply truncated: expected ${trimmed.length} chars, got ${actual.length}`);
   }
 
   const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 8000);
@@ -102,7 +116,6 @@ async function actionPostComment(params = {}) {
   await humanClick(postBtn);
   await sleep(randomBetween(2000, 4000));
 
-  // Verify the reply dialog closed
   const replyStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
   if (replyStillOpen && (replyStillOpen.closest('[role="dialog"]') || getTextboxContent(replyStillOpen).length > 0)) {
     const retryBtn = document.querySelector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
@@ -110,10 +123,13 @@ async function actionPostComment(params = {}) {
       await humanClick(retryBtn);
       await sleep(randomBetween(3000, 5000));
     }
+    _verifyDialogClosed("post_comment");
   }
 
   return { status: "ok" };
 }
+
+const actionPostComment = _withTimeout(_doPostComment, "post_comment");
 
 async function actionPostThread(params = {}) {
   const tweets = params.tweets || [];
@@ -136,8 +152,9 @@ async function actionPostThread(params = {}) {
     await sleep(randomBetween(500, 1000));
 
     const actual = getTextboxContent(textbox);
-    if (actual.length < tweets[i].trim().length * 0.8) {
-      throw new Error(`Thread tweet ${i + 1} truncated: expected ${tweets[i].length} chars, got ${actual.length}`);
+    const trimmed = tweets[i].trim();
+    if (actual.length < trimmed.length * 0.8) {
+      throw new Error(`Thread tweet ${i + 1} truncated: expected ${trimmed.length} chars, got ${actual.length}`);
     }
 
     if (i < tweets.length - 1) {
@@ -159,16 +176,14 @@ async function actionPostThread(params = {}) {
   return { status: "ok" };
 }
 
-async function actionQuoteTweet(params = {}) {
+async function _doQuoteTweet(params = {}) {
   const text = params.text || "";
 
-  // Click the retweet/repost button to open the dropdown
   const retweetBtn = document.querySelector('[data-testid="retweet"]');
   if (!retweetBtn) throw new Error("Retweet button not found — cannot quote");
   await humanClick(retweetBtn);
   await sleep(randomBetween(800, 1500));
 
-  // Find the "Quote" option in the dropdown menu
   const menuItems = document.querySelectorAll('[role="menuitem"]');
   let quoteOpt = null;
   for (const item of menuItems) {
@@ -178,7 +193,6 @@ async function actionQuoteTweet(params = {}) {
       break;
     }
   }
-  // Fallback: last menu item is usually Quote
   if (!quoteOpt && menuItems.length >= 2) {
     quoteOpt = menuItems[menuItems.length - 1];
   }
@@ -186,7 +200,6 @@ async function actionQuoteTweet(params = {}) {
   await humanClick(quoteOpt);
   await sleep(randomBetween(1500, 3000));
 
-  // Type into the quote compose textbox
   const textbox = await waitForElement('[data-testid="tweetTextarea_0"]', 8000);
   if (!textbox) throw new Error("Quote compose textbox not found");
 
@@ -197,8 +210,9 @@ async function actionQuoteTweet(params = {}) {
   await sleep(randomBetween(800, 2000));
 
   const actual = getTextboxContent(textbox);
-  if (actual.length < text.trim().length * 0.8) {
-    throw new Error(`Quote text truncated: expected ${text.length} chars, got ${actual.length}`);
+  const trimmed = text.trim();
+  if (actual.length < trimmed.length * 0.8) {
+    throw new Error(`Quote text truncated: expected ${trimmed.length} chars, got ${actual.length}`);
   }
 
   const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
@@ -208,7 +222,6 @@ async function actionQuoteTweet(params = {}) {
   await humanClick(postBtn);
   await sleep(randomBetween(2000, 4000));
 
-  // Verify the quote dialog closed
   const quoteStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
   if (quoteStillOpen && quoteStillOpen.closest('[role="dialog"]')) {
     const retryBtn = document.querySelector('[data-testid="tweetButton"]');
@@ -216,14 +229,17 @@ async function actionQuoteTweet(params = {}) {
       await humanClick(retryBtn);
       await sleep(randomBetween(3000, 5000));
     }
+    _verifyDialogClosed("quote_tweet");
   }
 
   return { status: "ok" };
 }
 
+const actionQuoteTweet = _withTimeout(_doQuoteTweet, "quote_tweet");
+
 async function actionLikePost(params = {}) {
   const likeBtn = document.querySelector('[data-testid="like"]');
-  if (!likeBtn) return { status: "ok" };
+  if (!likeBtn) return { status: "skipped", error: "Like button not found" };
   await humanClick(likeBtn);
   await sleep(randomBetween(500, 1500));
   return { status: "ok" };
@@ -231,7 +247,7 @@ async function actionLikePost(params = {}) {
 
 async function actionBookmarkPost(params = {}) {
   const bookmarkBtn = document.querySelector('[data-testid="bookmark"]');
-  if (!bookmarkBtn) return { status: "ok" };
+  if (!bookmarkBtn) return { status: "skipped", error: "Bookmark button not found" };
   await humanClick(bookmarkBtn);
   await sleep(randomBetween(500, 1500));
   return { status: "ok" };
@@ -258,7 +274,6 @@ async function actionRetweet(params = {}) {
   await humanClick(retweetBtn);
   await sleep(randomBetween(800, 1500));
 
-  // Click "Repost" (first menu item) — not "Quote" (second)
   const menuItems = document.querySelectorAll('[role="menuitem"]');
   let repostOpt = null;
   for (const item of menuItems) {
@@ -269,18 +284,18 @@ async function actionRetweet(params = {}) {
     }
   }
   if (!repostOpt) {
-    repostOpt = await waitForElement('[data-testid="retweetConfirm"], [role="menuitem"]', 3000);
+    repostOpt = await waitForElement('[data-testid="retweetConfirm"]', 3000);
   }
-  if (repostOpt) {
-    await humanClick(repostOpt);
-    await sleep(randomBetween(1000, 2000));
+  if (!repostOpt) {
+    return { status: "error", error: "Repost menu item not found" };
   }
+  await humanClick(repostOpt);
+  await sleep(randomBetween(1000, 2000));
 
   return { status: "ok" };
 }
 
 async function actionClickFollowingTab() {
-  // X home has two tabs: "For you" and "Following" — click Following
   const tabs = document.querySelectorAll('[role="tab"]');
   for (const tab of tabs) {
     if (tab.textContent.trim().toLowerCase() === "following") {
@@ -289,7 +304,6 @@ async function actionClickFollowingTab() {
       return { status: "ok" };
     }
   }
-  // Fallback: try the nav link
   const link = document.querySelector('a[href="/home"][role="tab"]');
   if (link) {
     const allTabs = link.closest('[role="tablist"]');
@@ -308,7 +322,6 @@ async function actionClickFollowingTab() {
 // actionNavigate is handled entirely by background.js via chrome.tabs.update
 
 async function actionDismissCompose() {
-  // Close compose modals and clear drafts to prevent "Leave site?" dialog on navigation
   for (let attempt = 0; attempt < 3; attempt++) {
     const modal = document.querySelector('[role="dialog"]');
     const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
@@ -318,7 +331,7 @@ async function actionDismissCompose() {
     if (modal && (hasContent || textarea)) {
       const closeBtn = modal.querySelector('[data-testid="app-bar-close"]');
       if (closeBtn) {
-        closeBtn.click();
+        await humanClick(closeBtn);
         await sleep(400);
       }
       const discardBtn = document.querySelector('[data-testid="confirmationSheetConfirm"]') ||
@@ -326,7 +339,7 @@ async function actionDismissCompose() {
           /discard|don't save|don't keep/i.test(b.textContent || "")
         );
       if (discardBtn) {
-        discardBtn.click();
+        await humanClick(discardBtn);
         await sleep(600);
       }
     } else if (textarea && hasContent && !isInModal) {
@@ -335,7 +348,7 @@ async function actionDismissCompose() {
     } else {
       const closeBtn = document.querySelector('[data-testid="app-bar-close"]');
       if (closeBtn) {
-        closeBtn.click();
+        await humanClick(closeBtn);
         await sleep(300);
       }
     }

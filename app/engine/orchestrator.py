@@ -368,6 +368,7 @@ class Orchestrator:
         for attempt in range(max_retries):
             text = gen_fn(**kwargs)
             if not text:
+                self.log(f"  [Gen] {gen_fn.__name__} returned None (validator rejected all attempts).")
                 return None
             if not is_too_similar(text, recent):
                 return text
@@ -508,6 +509,8 @@ class Orchestrator:
                         self._record_posted_text(tweet_text)
                         self._record_source_url(topic_post.get("url", ""))
                         self._record_position_from(tweet_text)
+                    else:
+                        self.log("[Tweet] Skipped — content generation failed.")
 
                 elif action == "qrt":
                     qrt_candidates = [p for p in available if _is_rt_worthy(p, enabled)]
@@ -517,7 +520,6 @@ class Orchestrator:
                     post = qrt_candidates[0]
                     used_urls.add(post.get("url", ""))
                     self.log(f"[QRT] Quoting @{post.get('handle')}")
-                    await self._cmd("navigate", url=post["url"])
                     await self._like_and_bookmark(post["url"])
                     image_b64_list = await fetch_images_as_base64(post.get("image_urls", []))
                     quote_comment = await self._generate_with_dedup(
@@ -535,6 +537,8 @@ class Orchestrator:
                             self._record_position_from(quote_comment)
                         except Exception as e:
                             self.log(f"[QRT] Failed: {e}")
+                    else:
+                        self.log("[QRT] Skipped — content generation failed.")
 
                 elif action == "rt":
                     rt_candidates = [p for p in available if _is_rt_worthy(p, enabled)]
@@ -558,7 +562,6 @@ class Orchestrator:
                     tone = self._next_tone(comment_idx + seq_num)
                     ptype, pstrategy, _ = self._classify_post(post["text"])
                     self.log(f"[Comment] @{post.get('handle')} | {length} | {tone}")
-                    await self._cmd("navigate", url=post["url"])
                     await self._like_and_bookmark(post["url"])
                     existing_replies = await self._scrape_reply_context(post["url"])
                     positions = self._get_positions_for(post["text"])
@@ -577,6 +580,8 @@ class Orchestrator:
                         self._record_action("comments")
                         self._record_posted_text(comment_text)
                         self._record_position_from(comment_text)
+                    else:
+                        self.log("[Comment] Skipped — content generation failed.")
                     comment_idx += 1
 
                 elif action == "follow":
@@ -756,6 +761,8 @@ class Orchestrator:
                     self._record_posted_text(tweet_text)
                     self._record_source_url(tweet_post.get("url", ""))
                     self._record_position_from(tweet_text)
+                else:
+                    self.log("[Degen Tweet] Skipped — content generation failed.")
             else:
                 tweet_post = posts[0]
                 tweet_handle = tweet_post.get("handle", "")
@@ -772,7 +779,6 @@ class Orchestrator:
                     qrt_post = qrt_candidates[0]
                     used_urls.add(qrt_post.get("url", ""))
                     self.log(f"[Degen QRT] Quoting @{qrt_post.get('handle')}")
-                    await self._cmd("navigate", url=qrt_post["url"])
                     await self._like_and_bookmark(qrt_post["url"])
 
                     quote_text = await self._generate_with_dedup(
@@ -783,6 +789,8 @@ class Orchestrator:
                         await self._cmd("quote_tweet", post_url=qrt_post["url"], text=quote_text)
                         self._record_action("qrts")
                         self._record_posted_text(quote_text)
+                    else:
+                        self.log("[Degen QRT] Skipped — content generation failed.")
                 else:
                     self.log("[Degen QRT] Skipped — no unused posts.")
 
@@ -804,7 +812,6 @@ class Orchestrator:
                 tone = self._next_tone(i + seq_num)
                 ptype, pstrategy, _ = self._classify_post(cp["text"])
 
-                await self._cmd("navigate", url=cp["url"])
                 await self._like_and_bookmark(cp["url"])
                 existing_replies = await self._scrape_reply_context(cp["url"])
                 positions = self._get_positions_for(cp["text"])
@@ -819,6 +826,8 @@ class Orchestrator:
                     await self._cmd("post_comment", post_url=cp["url"], text=comment_text)
                     self._record_action("comments")
                     self._record_posted_text(comment_text)
+                else:
+                    self.log("[Degen Comment] Skipped — content generation failed.")
                 if i < len(comment_posts) - 1:
                     await self._organic_pause(short=True)
 
@@ -959,6 +968,8 @@ class Orchestrator:
                         replied.append(p["url"])
                         self.state["sniper_replied_urls"] = replied[-200:]
                         self.state["sniper_total_replies"] = self.state.get("sniper_total_replies", 0) + 1
+                    else:
+                        self.log("[Sniper] Skipped — content generation failed.")
                     await self._organic_pause(short=True)
 
                 if self._cancelled:

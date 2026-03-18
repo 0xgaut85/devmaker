@@ -2,7 +2,10 @@
 
 import base64
 import json
+import logging
 import random
+
+logger = logging.getLogger(__name__)
 
 from app.content.prompts import (
     build_tweet_rephrase_prompt,
@@ -150,11 +153,13 @@ def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
         cfg=cfg,
         enabled_topics=enabled_topics,
     )
-    for _ in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, length_tier)
         if result.passed:
             return result.text
+        logger.info("[generate_tweet] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason, raw)
+    logger.warning("[generate_tweet] All %d attempts rejected by validator", MAX_RETRIES)
     return None
 
 
@@ -174,11 +179,13 @@ def generate_quote_comment(cfg: dict, original_tweet: str,
         has_images=bool(images),
     )
     call_fn = lambda: _call_llm_with_images_for_generation(cfg, system, user, images) if images else _call_llm(cfg, system, user)
-    for _ in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         raw = call_fn()
         result = validate_and_fix(raw, "SHORT")
         if result.passed:
             return result.text
+        logger.info("[generate_quote] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason, raw)
+    logger.warning("[generate_quote] All %d attempts rejected by validator", MAX_RETRIES)
     return None
 
 
@@ -204,11 +211,13 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
         has_images=bool(images),
     )
     call_fn = lambda: _call_llm_with_images_for_generation(cfg, system, user, images) if images else _call_llm(cfg, system, user)
-    for _ in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         raw = call_fn()
         result = validate_and_fix(raw, length_tier)
         if result.passed:
             return result.text
+        logger.info("[generate_reply] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason, raw)
+    logger.warning("[generate_reply] All %d attempts rejected by validator", MAX_RETRIES)
     return None
 
 
@@ -265,11 +274,13 @@ def generate_degen_tweet(cfg: dict, format_key: str, original_tweet: str,
         cfg.get("degen_do", ""), cfg.get("degen_dont", ""),
         recent_posts=recent_posts,
     )
-    for _ in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, "MEDIUM")
         if result.passed:
             return result.text
+        logger.info("[generate_degen_tweet] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason, raw)
+    logger.warning("[generate_degen_tweet] All %d attempts rejected by validator", MAX_RETRIES)
     return None
 
 
@@ -281,11 +292,13 @@ def generate_degen_quote_comment(cfg: dict, original_tweet: str,
         cfg.get("degen_do", ""), cfg.get("degen_dont", ""),
         recent_posts=recent_posts,
     )
-    for _ in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, "SHORT")
         if result.passed:
             return result.text
+        logger.info("[generate_degen_quote] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason, raw)
+    logger.warning("[generate_degen_quote] All %d attempts rejected by validator", MAX_RETRIES)
     return None
 
 
@@ -302,11 +315,13 @@ def generate_degen_reply_comment(cfg: dict, original_tweet: str, length_tier: st
         post_type=post_type, reply_strategy=reply_strategy,
         existing_replies=existing_replies, positions=positions,
     )
-    for _ in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         result = validate_and_fix(raw, length_tier)
         if result.passed:
             return result.text
+        logger.info("[generate_degen_reply] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason, raw)
+    logger.warning("[generate_degen_reply] All %d attempts rejected by validator", MAX_RETRIES)
     return None
 
 

@@ -28,23 +28,18 @@ function getTextboxContent(element) {
 }
 
 /**
- * Type text char-by-char so X's DraftJS editor registers each keystroke
- * in React state. Without this, the Post button stays disabled.
- * No typo simulation — keeps it clean and fast.
+ * Insert text char-by-char at human speed. Used for short texts or as
+ * the slow prefix before a paste for longer texts.
  */
-async function humanType(element, text) {
-  element.focus();
-  await sleep(randomBetween(150, 400));
-
+async function _typeCharByChar(element, text, minDelay = 25, maxDelay = 70) {
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
-
     element.dispatchEvent(new InputEvent("beforeinput", {
       inputType: "insertText", data: char, bubbles: true, cancelable: true,
     }));
     document.execCommand("insertText", false, char);
 
-    await sleep(randomBetween(25, 70));
+    await sleep(randomBetween(minDelay, maxDelay));
 
     if (char === " " && Math.random() < 0.1) {
       await sleep(randomBetween(80, 200));
@@ -53,6 +48,58 @@ async function humanType(element, text) {
       await sleep(randomBetween(100, 300));
     }
   }
+}
+
+/**
+ * Paste text via synthetic ClipboardEvent. DraftJS handles paste natively
+ * and processes the entire text in one React render cycle.
+ * Returns true if paste was accepted, false otherwise.
+ */
+function _pasteText(element, text) {
+  const dt = new DataTransfer();
+  dt.setData("text/plain", text);
+  element.dispatchEvent(new ClipboardEvent("paste", {
+    clipboardData: dt,
+    bubbles: true,
+    cancelable: true,
+  }));
+}
+
+/**
+ * Type text into a DraftJS editor.
+ *  - Short texts (<=150 chars): char-by-char at human speed.
+ *  - Long texts (>150 chars): type first 30 chars slowly, paste the rest.
+ *    Falls back to fast char-by-char (5-10ms) if paste doesn't register.
+ */
+async function humanType(element, text) {
+  element.focus();
+  await sleep(randomBetween(150, 400));
+
+  if (text.length <= 150) {
+    await _typeCharByChar(element, text);
+    return;
+  }
+
+  // Long text: type prefix slowly, paste the rest
+  const prefixLen = Math.min(30, text.length);
+  const prefix = text.slice(0, prefixLen);
+  const remainder = text.slice(prefixLen);
+
+  await _typeCharByChar(element, prefix);
+  await sleep(randomBetween(300, 700));
+
+  const beforePaste = getTextboxContent(element).length;
+  _pasteText(element, remainder);
+  await sleep(randomBetween(400, 800));
+
+  const afterPaste = getTextboxContent(element).length;
+  if (afterPaste >= beforePaste + remainder.length * 0.5) {
+    return; // paste worked
+  }
+
+  // Paste didn't register — fast char-by-char fallback
+  console.log("[DevMaker] Paste not accepted by DraftJS, falling back to fast typing");
+  await _typeCharByChar(element, remainder, 5, 15);
 }
 
 async function humanClick(element) {
