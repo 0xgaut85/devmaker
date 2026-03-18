@@ -28,27 +28,29 @@ function getTextboxContent(element) {
 }
 
 /**
- * Type text reliably. Uses word-by-word insertion to avoid contentEditable
- * selection bugs that cause char-by-char typing to delete or truncate content.
- * No typo simulation — it was causing delete to wipe large chunks.
+ * Type text char-by-char so X's DraftJS editor registers each keystroke
+ * in React state. Without this, the Post button stays disabled.
+ * No typo simulation — keeps it clean and fast.
  */
 async function humanType(element, text) {
   element.focus();
-  await sleep(randomBetween(200, 500));
+  await sleep(randomBetween(150, 400));
 
-  const words = text.split(/(\s+)/);
-  for (let i = 0; i < words.length; i++) {
-    const chunk = words[i];
-    if (!chunk) continue;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
 
-    element.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: chunk, bubbles: true, cancelable: true }));
-    document.execCommand("insertText", false, chunk);
+    element.dispatchEvent(new InputEvent("beforeinput", {
+      inputType: "insertText", data: char, bubbles: true, cancelable: true,
+    }));
+    document.execCommand("insertText", false, char);
 
-    const delay = chunk.match(/\s/) ? randomBetween(50, 150) : randomBetween(40, 120);
-    await sleep(delay);
+    await sleep(randomBetween(25, 70));
 
-    if (chunk.endsWith(".") || chunk.endsWith("!")) {
-      await sleep(randomBetween(150, 350));
+    if (char === " " && Math.random() < 0.1) {
+      await sleep(randomBetween(80, 200));
+    }
+    if ((char === "." || char === "!" || char === "?") && Math.random() < 0.2) {
+      await sleep(randomBetween(100, 300));
     }
   }
 }

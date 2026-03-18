@@ -57,6 +57,17 @@ async function actionPostTweet(params = {}) {
   await humanClick(postBtn);
   await sleep(randomBetween(2000, 4000));
 
+  // Verify the compose dialog closed (meaning the post was submitted)
+  const dialogStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
+  if (dialogStillOpen && dialogStillOpen.closest('[role="dialog"]')) {
+    // Post button didn't work — try clicking it again
+    const retryBtn = document.querySelector('[data-testid="tweetButton"]');
+    if (retryBtn) {
+      await humanClick(retryBtn);
+      await sleep(randomBetween(3000, 5000));
+    }
+  }
+
   return { status: "ok" };
 }
 
@@ -90,6 +101,16 @@ async function actionPostComment(params = {}) {
   await sleep(randomBetween(500, 2000));
   await humanClick(postBtn);
   await sleep(randomBetween(2000, 4000));
+
+  // Verify the reply dialog closed
+  const replyStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
+  if (replyStillOpen && (replyStillOpen.closest('[role="dialog"]') || getTextboxContent(replyStillOpen).length > 0)) {
+    const retryBtn = document.querySelector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
+    if (retryBtn) {
+      await humanClick(retryBtn);
+      await sleep(randomBetween(3000, 5000));
+    }
+  }
 
   return { status: "ok" };
 }
@@ -186,6 +207,16 @@ async function actionQuoteTweet(params = {}) {
   await sleep(randomBetween(500, 1500));
   await humanClick(postBtn);
   await sleep(randomBetween(2000, 4000));
+
+  // Verify the quote dialog closed
+  const quoteStillOpen = document.querySelector('[data-testid="tweetTextarea_0"]');
+  if (quoteStillOpen && quoteStillOpen.closest('[role="dialog"]')) {
+    const retryBtn = document.querySelector('[data-testid="tweetButton"]');
+    if (retryBtn) {
+      await humanClick(retryBtn);
+      await sleep(randomBetween(3000, 5000));
+    }
+  }
 
   return { status: "ok" };
 }
