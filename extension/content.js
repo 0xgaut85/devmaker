@@ -29,6 +29,9 @@ const COMMAND_HANDLERS = {
   status: async () => ({ status: "ok", data: { url: window.location.href } }),
 };
 
+const _BYPASS_LOCK = new Set(["ping", "status", "dismiss_compose"]);
+let _activeLock = null;
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const handler = COMMAND_HANDLERS[msg.cmd];
   if (!handler) {
@@ -36,9 +39,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (!_BYPASS_LOCK.has(msg.cmd) && _activeLock) {
+    console.log(`[DevMaker] Rejecting ${msg.cmd} — busy with ${_activeLock}`);
+    sendResponse({ status: "error", error: `Busy with ${_activeLock}, rejected: ${msg.cmd}` });
+    return true;
+  }
+
+  const needsLock = !_BYPASS_LOCK.has(msg.cmd);
+  if (needsLock) _activeLock = msg.cmd;
+
   handler(msg.params || {})
     .then((result) => sendResponse(result))
-    .catch((err) => sendResponse({ status: "error", error: err.message }));
+    .catch((err) => sendResponse({ status: "error", error: err.message }))
+    .finally(() => { if (needsLock) _activeLock = null; });
 
   return true;
 });

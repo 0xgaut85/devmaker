@@ -133,7 +133,17 @@ class Orchestrator:
         """Send a command to the extension and return the response."""
         if cmd in self._SLOW_COMMANDS and timeout <= 60.0:
             timeout = 180.0
-        return await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
+        result = await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
+        if result.get("status") == "error":
+            raise RuntimeError(f"Extension error [{cmd}]: {result.get('error', 'unknown')}")
+        return result
+
+    async def _dismiss_compose_safe(self):
+        """Best-effort cleanup of any open compose dialog."""
+        try:
+            await self._cmd("dismiss_compose")
+        except Exception:
+            pass
 
     def _use_following(self) -> bool:
         return bool(self.cfg.get("use_following_tab", True))
@@ -503,12 +513,16 @@ class Orchestrator:
                         self.log(f"[Tweet] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
                         image_urls = topic_post.get("image_urls", [])
                         use_images = bool(image_urls) and _images_relevant(topic_post["text"], tweet_text)
-                        await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls if use_images else [])
-                        self.log("[Tweet] Posted.")
-                        self._record_action("tweets")
-                        self._record_posted_text(tweet_text)
-                        self._record_source_url(topic_post.get("url", ""))
-                        self._record_position_from(tweet_text)
+                        try:
+                            await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls if use_images else [])
+                            self.log("[Tweet] Posted.")
+                            self._record_action("tweets")
+                            self._record_posted_text(tweet_text)
+                            self._record_source_url(topic_post.get("url", ""))
+                            self._record_position_from(tweet_text)
+                        except Exception as e:
+                            self.log(f"[Tweet] Failed: {e}")
+                            await self._dismiss_compose_safe()
                     else:
                         self.log("[Tweet] Skipped — content generation failed.")
 
@@ -537,6 +551,7 @@ class Orchestrator:
                             self._record_position_from(quote_comment)
                         except Exception as e:
                             self.log(f"[QRT] Failed: {e}")
+                            await self._dismiss_compose_safe()
                     else:
                         self.log("[QRT] Skipped — content generation failed.")
 
@@ -575,11 +590,15 @@ class Orchestrator:
                         image_b64_list=image_b64_list,
                     )
                     if comment_text:
-                        await self._cmd("post_comment", post_url=post["url"], text=comment_text)
-                        self.log(f"  -> Posted.")
-                        self._record_action("comments")
-                        self._record_posted_text(comment_text)
-                        self._record_position_from(comment_text)
+                        try:
+                            await self._cmd("post_comment", post_url=post["url"], text=comment_text)
+                            self.log(f"  -> Posted.")
+                            self._record_action("comments")
+                            self._record_posted_text(comment_text)
+                            self._record_position_from(comment_text)
+                        except Exception as e:
+                            self.log(f"[Comment] Failed: {e}")
+                            await self._dismiss_compose_safe()
                     else:
                         self.log("[Comment] Skipped — content generation failed.")
                     comment_idx += 1
@@ -615,16 +634,19 @@ class Orchestrator:
                         enabled_topics=enabled,
                     )
                     if thread_tweets:
-                        # Check the hook tweet (first one) isn't too similar to recent posts
                         if is_too_similar(thread_tweets[0], recent):
                             self.log("[Thread] Skipped — hook too similar to recent posts.")
                         else:
-                            await self._cmd("post_thread", tweets=thread_tweets)
-                            self.log(f"[Thread] Posted {len(thread_tweets)}-tweet thread.")
-                            self._record_action("tweets")
-                            self.state["thread_last_format"] = thread_format
-                            for t in thread_tweets:
-                                self._record_posted_text(t)
+                            try:
+                                await self._cmd("post_thread", tweets=thread_tweets)
+                                self.log(f"[Thread] Posted {len(thread_tweets)}-tweet thread.")
+                                self._record_action("tweets")
+                                self.state["thread_last_format"] = thread_format
+                                for t in thread_tweets:
+                                    self._record_posted_text(t)
+                            except Exception as e:
+                                self.log(f"[Thread] Failed: {e}")
+                                await self._dismiss_compose_safe()
 
                 # Organic pause between actions (like a real person browsing)
                 if random.random() < 0.4:
@@ -640,6 +662,7 @@ class Orchestrator:
 
         except Exception as e:
             self.log(f"ERROR: {e}")
+            await self._dismiss_compose_safe()
             return False
 
     # ================================================================== #
@@ -690,10 +713,14 @@ class Orchestrator:
                 )
                 comment_text = smart or generate_project_comment(name, recent_comments=recent)
                 self.log(f"[Reply] -> \"{comment_text}\"")
-                await self._cmd("post_comment", post_url=post["url"], text=comment_text)
-                recent.append(comment_text)
-                recent = recent[-10:]
-                total += 1
+                try:
+                    await self._cmd("post_comment", post_url=post["url"], text=comment_text)
+                    recent.append(comment_text)
+                    recent = recent[-10:]
+                    total += 1
+                except Exception as e:
+                    self.log(f"[Reply] Failed: {e}")
+                    await self._dismiss_compose_safe()
                 await self._organic_pause(short=True)
 
             self.state["project_sequence_number"] = seq_num
@@ -703,6 +730,7 @@ class Orchestrator:
 
         except Exception as e:
             self.log(f"ERROR: {e}")
+            await self._dismiss_compose_safe()
             return False
 
     # ================================================================== #
@@ -755,12 +783,16 @@ class Orchestrator:
                 if tweet_text:
                     image_urls = tweet_post.get("image_urls", [])
                     use_images = bool(image_urls) and _images_relevant(tweet_post["text"], tweet_text)
-                    await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls if use_images else [])
-                    self.log("[Degen Tweet] Posted.")
-                    self._record_action("tweets")
-                    self._record_posted_text(tweet_text)
-                    self._record_source_url(tweet_post.get("url", ""))
-                    self._record_position_from(tweet_text)
+                    try:
+                        await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls if use_images else [])
+                        self.log("[Degen Tweet] Posted.")
+                        self._record_action("tweets")
+                        self._record_posted_text(tweet_text)
+                        self._record_source_url(tweet_post.get("url", ""))
+                        self._record_position_from(tweet_text)
+                    except Exception as e:
+                        self.log(f"[Degen Tweet] Failed: {e}")
+                        await self._dismiss_compose_safe()
                 else:
                     self.log("[Degen Tweet] Skipped — content generation failed.")
             else:
@@ -786,9 +818,14 @@ class Orchestrator:
                         original_tweet=qrt_post["text"],
                     )
                     if quote_text:
-                        await self._cmd("quote_tweet", post_url=qrt_post["url"], text=quote_text)
-                        self._record_action("qrts")
-                        self._record_posted_text(quote_text)
+                        try:
+                            await self._cmd("quote_tweet", post_url=qrt_post["url"], text=quote_text)
+                            self.log("[Degen QRT] Posted.")
+                            self._record_action("qrts")
+                            self._record_posted_text(quote_text)
+                        except Exception as e:
+                            self.log(f"[Degen QRT] Failed: {e}")
+                            await self._dismiss_compose_safe()
                     else:
                         self.log("[Degen QRT] Skipped — content generation failed.")
                 else:
@@ -823,9 +860,14 @@ class Orchestrator:
                     existing_replies=existing_replies, positions=positions,
                 )
                 if comment_text:
-                    await self._cmd("post_comment", post_url=cp["url"], text=comment_text)
-                    self._record_action("comments")
-                    self._record_posted_text(comment_text)
+                    try:
+                        await self._cmd("post_comment", post_url=cp["url"], text=comment_text)
+                        self.log("[Degen Comment] Posted.")
+                        self._record_action("comments")
+                        self._record_posted_text(comment_text)
+                    except Exception as e:
+                        self.log(f"[Degen Comment] Failed: {e}")
+                        await self._dismiss_compose_safe()
                 else:
                     self.log("[Degen Comment] Skipped — content generation failed.")
                 if i < len(comment_posts) - 1:
@@ -839,6 +881,7 @@ class Orchestrator:
 
         except Exception as e:
             self.log(f"ERROR: {e}")
+            await self._dismiss_compose_safe()
             return False
 
     # ================================================================== #
@@ -892,6 +935,7 @@ class Orchestrator:
 
         except Exception as e:
             self.log(f"ERROR: {e}")
+            await self._dismiss_compose_safe()
             return False
 
     # ================================================================== #
@@ -961,13 +1005,17 @@ class Orchestrator:
                         image_b64_list=image_b64_list,
                     )
                     if comment_text:
-                        await self._cmd("post_comment", post_url=p["url"], text=comment_text)
-                        self._record_action("comments")
-                        self._record_posted_text(comment_text)
-                        replied = self.state.setdefault("sniper_replied_urls", [])
-                        replied.append(p["url"])
-                        self.state["sniper_replied_urls"] = replied[-200:]
-                        self.state["sniper_total_replies"] = self.state.get("sniper_total_replies", 0) + 1
+                        try:
+                            await self._cmd("post_comment", post_url=p["url"], text=comment_text)
+                            self._record_action("comments")
+                            self._record_posted_text(comment_text)
+                            replied = self.state.setdefault("sniper_replied_urls", [])
+                            replied.append(p["url"])
+                            self.state["sniper_replied_urls"] = replied[-200:]
+                            self.state["sniper_total_replies"] = self.state.get("sniper_total_replies", 0) + 1
+                        except Exception as e:
+                            self.log(f"[Sniper] Comment failed: {e}")
+                            await self._dismiss_compose_safe()
                     else:
                         self.log("[Sniper] Skipped — content generation failed.")
                     await self._organic_pause(short=True)
@@ -986,6 +1034,7 @@ class Orchestrator:
 
         except Exception as e:
             self.log(f"ERROR: {e}")
+            await self._dismiss_compose_safe()
             return False
 
     # ================================================================== #
