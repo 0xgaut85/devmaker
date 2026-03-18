@@ -126,7 +126,7 @@ class Orchestrator:
     def cancel(self):
         self._cancelled = True
 
-    _SLOW_COMMANDS = {"post_tweet", "post_comment", "post_thread", "quote_tweet", "session_warmup"}
+    _SLOW_COMMANDS = {"post_tweet", "post_comment", "post_thread", "quote_tweet", "session_warmup", "scrape_timeline"}
 
     async def _cmd(self, cmd: str, timeout: float = 60.0, **params) -> dict:
         """Send a command to the extension and return the response."""

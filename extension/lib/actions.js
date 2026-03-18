@@ -44,7 +44,12 @@ async function actionPostTweet(params = {}) {
   await humanType(textbox, text);
   await sleep(randomBetween(800, 2000));
 
-  // The post button inside the compose dialog
+  const actual = getTextboxContent(textbox);
+  const expected = text.trim();
+  if (actual.length < expected.length * 0.8) {
+    throw new Error(`Typed content truncated: expected ${expected.length} chars, got ${actual.length}`);
+  }
+
   const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
   if (!postBtn) throw new Error("Post button not found");
 
@@ -58,7 +63,14 @@ async function actionPostTweet(params = {}) {
 async function actionPostComment(params = {}) {
   const text = params.text || "";
 
-  const replyBox = await waitForElement('[data-testid="tweetTextarea_0"]', 8000);
+  // Click Reply to open the reply composer (required on post pages)
+  const openReplyBtn = document.querySelector('[data-testid="reply"]');
+  if (openReplyBtn) {
+    await humanClick(openReplyBtn);
+    await sleep(randomBetween(1500, 3000));
+  }
+
+  const replyBox = await waitForElement('[data-testid="tweetTextarea_0"]', 12000);
   if (!replyBox) throw new Error("Reply textbox not found");
 
   await humanClick(replyBox);
@@ -67,11 +79,16 @@ async function actionPostComment(params = {}) {
   await humanType(replyBox, text);
   await sleep(randomBetween(500, 1500));
 
-  const replyBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
-  if (!replyBtn) throw new Error("Reply button not found");
+  const actual = getTextboxContent(replyBox);
+  if (actual.length < text.trim().length * 0.8) {
+    throw new Error(`Reply truncated: expected ${text.length} chars, got ${actual.length}`);
+  }
+
+  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 8000);
+  if (!postBtn) throw new Error("Reply post button not found");
 
   await sleep(randomBetween(500, 2000));
-  await humanClick(replyBtn);
+  await humanClick(postBtn);
   await sleep(randomBetween(2000, 4000));
 
   return { status: "ok" };
@@ -96,6 +113,11 @@ async function actionPostThread(params = {}) {
     await clearTextbox(textbox);
     await humanType(textbox, tweets[i]);
     await sleep(randomBetween(500, 1000));
+
+    const actual = getTextboxContent(textbox);
+    if (actual.length < tweets[i].trim().length * 0.8) {
+      throw new Error(`Thread tweet ${i + 1} truncated: expected ${tweets[i].length} chars, got ${actual.length}`);
+    }
 
     if (i < tweets.length - 1) {
       const addBtn = document.querySelector('[data-testid="addButton"]');
@@ -152,6 +174,11 @@ async function actionQuoteTweet(params = {}) {
   await clearTextbox(textbox);
   await humanType(textbox, text);
   await sleep(randomBetween(800, 2000));
+
+  const actual = getTextboxContent(textbox);
+  if (actual.length < text.trim().length * 0.8) {
+    throw new Error(`Quote text truncated: expected ${text.length} chars, got ${actual.length}`);
+  }
 
   const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
   if (!postBtn) throw new Error("Quote post button not found");

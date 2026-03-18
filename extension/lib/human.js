@@ -23,32 +23,32 @@ async function clearTextbox(element) {
   }
 }
 
+function getTextboxContent(element) {
+  return (element.textContent || element.innerText || element.value || "").trim();
+}
+
+/**
+ * Type text reliably. Uses word-by-word insertion to avoid contentEditable
+ * selection bugs that cause char-by-char typing to delete or truncate content.
+ * No typo simulation — it was causing delete to wipe large chunks.
+ */
 async function humanType(element, text) {
   element.focus();
-  for (const char of text) {
-    const delay = randomBetween(40, 180);
-    if (Math.random() < 0.015 && text.length > 20) {
-      const typo = String.fromCharCode(char.charCodeAt(0) + (Math.random() > 0.5 ? 1 : -1));
-      element.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: typo, bubbles: true, cancelable: true }));
-      document.execCommand("insertText", false, typo);
-      await sleep(randomBetween(100, 300));
-      element.dispatchEvent(new InputEvent("beforeinput", { inputType: "deleteContentBackward", bubbles: true, cancelable: true }));
-      document.execCommand("delete", false);
-      await sleep(randomBetween(50, 150));
-    }
+  await sleep(randomBetween(200, 500));
 
-    element.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: char, bubbles: true, cancelable: true }));
-    document.execCommand("insertText", false, char);
+  const words = text.split(/(\s+)/);
+  for (let i = 0; i < words.length; i++) {
+    const chunk = words[i];
+    if (!chunk) continue;
+
+    element.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: chunk, bubbles: true, cancelable: true }));
+    document.execCommand("insertText", false, chunk);
+
+    const delay = chunk.match(/\s/) ? randomBetween(50, 150) : randomBetween(40, 120);
     await sleep(delay);
 
-    if (char === " " && Math.random() < 0.15) {
-      await sleep(randomBetween(200, 800));
-    }
-    if (char === "." && Math.random() < 0.3) {
-      await sleep(randomBetween(300, 1200));
-    }
-    if (char === "\n") {
-      await sleep(randomBetween(200, 600));
+    if (chunk.endsWith(".") || chunk.endsWith("!")) {
+      await sleep(randomBetween(150, 350));
     }
   }
 }
