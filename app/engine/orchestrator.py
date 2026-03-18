@@ -475,16 +475,16 @@ class Orchestrator:
                 if self._cancelled:
                     return False
 
-                # Pick next unused post from pool
-                available = [p for p in post_pool if p.get("url") not in used_urls and p.get("handle") not in used_handles]
+                # Pick next unused post — NEVER reuse a URL within the same sequence
+                available = [p for p in post_pool if p.get("url") not in used_urls]
                 if not available:
-                    available = [p for p in post_pool if p.get("handle") not in used_handles]
-                if not available:
-                    available = post_pool
-                post = available[0] if available else post_pool[0]
+                    self.log(f"[{action.upper()}] Skipped — no unused posts left.")
+                    continue
+                post = available[0]
 
                 if action == "tweet":
                     topic_post = self._pick_post(available, self._next_topic(enabled)) or post
+                    used_urls.add(topic_post.get("url", ""))
                     self.log(f"[Tweet] From @{topic_post.get('handle')} ({topic_post.get('likes', 0)} likes)")
                     tweet_text = await self._generate_with_dedup(
                         generate_tweet, cfg=self.cfg,
@@ -502,17 +502,14 @@ class Orchestrator:
                         self._record_posted_text(tweet_text)
                         self._record_source_url(topic_post.get("url", ""))
                         self._record_position_from(tweet_text)
-                        used_urls.add(topic_post.get("url", ""))
-                        used_handles.add(topic_post.get("handle", ""))
 
                 elif action == "qrt":
-                    # Find an RT-worthy post for quoting
                     qrt_candidates = [p for p in available if _is_rt_worthy(p, enabled)]
-                    if qrt_candidates:
-                        post = qrt_candidates[0]
-                    elif not _is_rt_worthy(post, enabled):
+                    if not qrt_candidates:
                         self.log("[QRT] Skipped — no quality post to quote.")
                         continue
+                    post = qrt_candidates[0]
+                    used_urls.add(post.get("url", ""))
                     self.log(f"[QRT] Quoting @{post.get('handle')}")
                     await self._cmd("navigate", url=post["url"])
                     await self._like_and_bookmark(post["url"])
@@ -530,29 +527,25 @@ class Orchestrator:
                             self._record_position_from(quote_comment)
                         except Exception as e:
                             self.log(f"[QRT] Failed: {e}")
-                        used_urls.add(post.get("url", ""))
-                        used_handles.add(post.get("handle", ""))
 
                 elif action == "rt":
-                    # Find an RT-worthy post — skip political, promo, off-topic junk
                     rt_candidates = [p for p in available if _is_rt_worthy(p, enabled)]
-                    if rt_candidates:
-                        post = rt_candidates[0]
-                    elif not _is_rt_worthy(post, enabled):
+                    if not rt_candidates:
                         self.log("[RT] Skipped — no quality post to retweet.")
                         continue
+                    post = rt_candidates[0]
+                    used_urls.add(post.get("url", ""))
                     self.log(f"[RT] Reposting @{post.get('handle')}")
                     try:
                         await self._cmd("retweet", post_url=post["url"])
                         self.log("[RT] Done.")
                     except Exception as e:
                         self.log(f"[RT] Failed: {e}")
-                    used_urls.add(post.get("url", ""))
-                    used_handles.add(post.get("handle", ""))
 
                 elif action == "comment":
                     if not self._can_act("comments"):
                         continue
+                    used_urls.add(post.get("url", ""))
                     length = comment_rotation[comment_idx] if comment_idx < len(comment_rotation) else "MEDIUM"
                     tone = self._next_tone(comment_idx + seq_num)
                     ptype, pstrategy, _ = self._classify_post(post["text"])
@@ -574,8 +567,6 @@ class Orchestrator:
                         self._record_action("comments")
                         self._record_posted_text(comment_text)
                         self._record_position_from(comment_text)
-                    used_urls.add(post.get("url", ""))
-                    used_handles.add(post.get("handle", ""))
                     comment_idx += 1
 
                 elif action == "follow":

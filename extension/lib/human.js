@@ -11,11 +11,23 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function clearTextbox(element) {
+  element.focus();
+  await sleep(randomBetween(100, 300));
+  const current = element.textContent || element.innerText || element.value || "";
+  if (current.trim().length > 0) {
+    document.execCommand("selectAll", false);
+    await sleep(randomBetween(50, 150));
+    document.execCommand("delete", false);
+    await sleep(randomBetween(200, 500));
+  }
+}
+
 async function humanType(element, text) {
   element.focus();
   for (const char of text) {
     const delay = randomBetween(40, 180);
-    if (Math.random() < 0.03 && text.length > 10) {
+    if (Math.random() < 0.015 && text.length > 20) {
       const typo = String.fromCharCode(char.charCodeAt(0) + (Math.random() > 0.5 ? 1 : -1));
       element.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: typo, bubbles: true, cancelable: true }));
       document.execCommand("insertText", false, typo);

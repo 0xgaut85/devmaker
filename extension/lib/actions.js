@@ -9,6 +9,22 @@
 async function actionPostTweet(params = {}) {
   const text = params.text || "";
 
+  // Dismiss any stale compose dialog first
+  const existingDialog = document.querySelector('[data-testid="tweetTextarea_0"]');
+  if (existingDialog && (existingDialog.textContent || "").trim().length > 0) {
+    const closeBtn = document.querySelector('[data-testid="app-bar-close"], [aria-label="Close"]');
+    if (closeBtn) {
+      await humanClick(closeBtn);
+      await sleep(randomBetween(500, 1000));
+      // Dismiss the "discard" confirmation if it appears
+      const discardBtn = document.querySelector('[data-testid="confirmationSheetConfirm"]');
+      if (discardBtn) {
+        await humanClick(discardBtn);
+        await sleep(randomBetween(500, 1000));
+      }
+    }
+  }
+
   // Try sidebar compose button first, then floating action button
   let composeBtn = document.querySelector('[data-testid="SideNav_NewTweet_Button"]');
   if (!composeBtn) composeBtn = document.querySelector('[data-testid="tweetButton"]');
@@ -24,6 +40,7 @@ async function actionPostTweet(params = {}) {
 
   await humanClick(textbox);
   await sleep(randomBetween(300, 800));
+  await clearTextbox(textbox);
   await humanType(textbox, text);
   await sleep(randomBetween(800, 2000));
 
@@ -46,6 +63,7 @@ async function actionPostComment(params = {}) {
 
   await humanClick(replyBox);
   await sleep(randomBetween(300, 800));
+  await clearTextbox(replyBox);
   await humanType(replyBox, text);
   await sleep(randomBetween(500, 1500));
 
@@ -75,6 +93,7 @@ async function actionPostThread(params = {}) {
 
     await humanClick(textbox);
     await sleep(randomBetween(300, 600));
+    await clearTextbox(textbox);
     await humanType(textbox, tweets[i]);
     await sleep(randomBetween(500, 1000));
 
@@ -130,6 +149,7 @@ async function actionQuoteTweet(params = {}) {
 
   await humanClick(textbox);
   await sleep(randomBetween(300, 800));
+  await clearTextbox(textbox);
   await humanType(textbox, text);
   await sleep(randomBetween(800, 2000));
 
