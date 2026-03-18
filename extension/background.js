@@ -110,9 +110,14 @@ function connectWs() {
         return;
       }
 
-      // --- scrape_timeline: ensure we're on /home first ---
+      // --- scrape_timeline: ensure we're on /home, then click Following tab if requested ---
       if (cmd === "scrape_timeline") {
         await ensureHomePage(tab.id);
+        if (params.use_following_tab) {
+          try {
+            await sendToContent(tab.id, "click_following_tab", {});
+          } catch {}
+        }
       }
 
       // --- action commands with post_url: navigate to the post first ---

@@ -48,6 +48,8 @@ export default function Settings() {
         <Section title="Mode">
           <Select label="Farming Mode" value={config.farming_mode} onChange={(v) => update("farming_mode", v)}
             options={["dev", "project", "degen", "rt_farm", "sniper"]} />
+          <Toggle label="Use Following Tab" value={config.use_following_tab ?? true} onChange={(v) => update("use_following_tab", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Scrape from "Following" instead of "For You". Better for fresh accounts with curated follows.</p>
         </Section>
 
         <Section title="LLM">

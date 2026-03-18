@@ -113,6 +113,9 @@ class Config(Base):
     personality_brevity = Column(Integer, default=5)
     personality_edginess = Column(Integer, default=3)
 
+    # Timeline
+    use_following_tab = Column(Boolean, default=True)
+
     # Timing
     action_delay_seconds = Column(Integer, default=3)
     sequence_delay_minutes = Column(Integer, default=45)

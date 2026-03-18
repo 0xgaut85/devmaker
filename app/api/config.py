@@ -29,6 +29,7 @@ EXPOSED_FIELDS = [
     "active_hours_enabled", "active_hours_start", "active_hours_end", "active_hours_timezone",
     "personality_humor", "personality_sarcasm", "personality_confidence", "personality_warmth",
     "personality_controversy", "personality_intellect", "personality_brevity", "personality_edginess",
+    "use_following_tab",
     "action_delay_seconds", "sequence_delay_minutes", "min_engagement_likes",
 ]
 

@@ -176,6 +176,32 @@ async function actionRetweet(params = {}) {
   return { status: "ok" };
 }
 
+async function actionClickFollowingTab() {
+  // X home has two tabs: "For you" and "Following" — click Following
+  const tabs = document.querySelectorAll('[role="tab"]');
+  for (const tab of tabs) {
+    if (tab.textContent.trim().toLowerCase() === "following") {
+      await humanClick(tab);
+      await sleep(randomBetween(1500, 3000));
+      return { status: "ok" };
+    }
+  }
+  // Fallback: try the nav link
+  const link = document.querySelector('a[href="/home"][role="tab"]');
+  if (link) {
+    const allTabs = link.closest('[role="tablist"]');
+    if (allTabs) {
+      const tabItems = allTabs.querySelectorAll('[role="tab"]');
+      if (tabItems.length >= 2) {
+        await humanClick(tabItems[1]);
+        await sleep(randomBetween(1500, 3000));
+        return { status: "ok" };
+      }
+    }
+  }
+  return { status: "ok" };
+}
+
 // actionNavigate is handled entirely by background.js via chrome.tabs.update
 
 async function actionScroll(params = {}) {

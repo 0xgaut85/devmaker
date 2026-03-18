@@ -107,6 +107,9 @@ class Orchestrator:
             timeout = 180.0
         return await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
 
+    def _use_following(self) -> bool:
+        return bool(self.cfg.get("use_following_tab", True))
+
     def _enabled_topics(self) -> list[str]:
         topics = self.cfg.get("topics", {})
         return [t for t, w in topics.items() if w]
@@ -389,13 +392,14 @@ class Orchestrator:
             seq_num = self.state.get("sequence_number", 0) + 1
             self.log(f"=== DEV SEQUENCE {seq_num} | Format: {format_key} ({FORMAT_CATALOG[format_key]['name']}) ===")
 
-            self.log("Scraping timeline...")
-            resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5)
+            following = self._use_following()
+            self.log(f"Scraping timeline ({'Following' if following else 'For You'})...")
+            resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5, use_following_tab=following)
             posts = resp.get("data", [])
             self.log(f"Found {len(posts)} posts (raw).")
 
             if len(posts) < 8:
-                resp = await self._cmd("scrape_timeline", min_likes=20, max_posts=30, scroll_count=3)
+                resp = await self._cmd("scrape_timeline", min_likes=20, max_posts=30, scroll_count=3, use_following_tab=following)
                 posts = resp.get("data", [])
 
             for p in posts:
@@ -624,7 +628,7 @@ class Orchestrator:
             min_likes = self.cfg.get("project_timeline_min_likes", 100)
             self.log(f"=== PROJECT SEQUENCE {seq_num} | target {target} comments ===")
 
-            resp = await self._cmd("scrape_timeline", min_likes=min_likes, max_posts=50, scroll_count=6)
+            resp = await self._cmd("scrape_timeline", min_likes=min_likes, max_posts=50, scroll_count=6, use_following_tab=self._use_following())
             posts = resp.get("data", [])
             self.log(f"Found {len(posts)} posts.")
 
@@ -695,7 +699,7 @@ class Orchestrator:
             seq_num = self.state.get("degen_sequence_number", 0) + 1
             self.log(f"=== DEGEN SEQUENCE {seq_num} | Format: {format_key} ===")
 
-            resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5)
+            resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5, use_following_tab=self._use_following())
             posts = resp.get("data", [])
             if len(posts) < 3:
                 self.log("ERROR: Not enough posts.")
@@ -887,7 +891,7 @@ class Orchestrator:
                 self.log(f"[Sniper #{scan_num}] Scanning...")
                 await self._lurk_scroll(random.randint(2, 4))
 
-                resp = await self._cmd("scrape_timeline", min_likes=20, max_posts=40, scroll_count=6, sort_by="virality")
+                resp = await self._cmd("scrape_timeline", min_likes=20, max_posts=40, scroll_count=6, sort_by="virality", use_following_tab=self._use_following())
                 posts = resp.get("data", [])
 
                 replied_urls = self.state.get("sniper_replied_urls", [])
