@@ -152,18 +152,22 @@ FORMAT for this post: {fmt['name']}
 {_recent_posts_block(recent_posts)}
 CRITICAL RULES:
 - Output ONLY the final post text. No quotes, no labels, no explanation.
-- Do NOT start with "honestly" or "this is".
+- The post MUST make sense completely on its own. A stranger with zero context should understand it.
+- NEVER reference "this", "that", or "the original" as if reacting to another post. You are NOT replying.
+- Do NOT start with "honestly", "this is", "that's", or "so true".
 - NEVER use em dashes (— or –). Use commas or periods instead.
 - Use line breaks between sentences (each sentence on its own line with a blank line gap).
+- Include at least one SPECIFIC detail (a tool name, a number, a scenario, a concrete example).
 """
-    user = f"""Rephrase this high-engagement tweet in your own voice and the specified format.
-Keep the core idea but make it yours. Add your own angle or detail.
-Do NOT copy it word for word. Change the structure, wording, and add personality.
+    user = f"""Write an ORIGINAL standalone post inspired by the topic below.
+Do NOT react to it or reference it. Create your OWN take on the same topic.
+Add your own specific experience, observation, or opinion. Make it feel personal.
+The reader should think you wrote this from your own thoughts, not from reading someone else's post.
 
-Original tweet:
+Topic inspiration (do NOT quote or reference this directly):
 {original_tweet}
 
-Your rephrased version:"""
+Your original post:"""
     return system, user
 
 
@@ -188,12 +192,14 @@ VOICE — write exactly like this person:
 CRITICAL RULES:
 - Output ONLY the quote comment text. No quotes, no labels.
 - Keep it 1-3 sentences. Smart, adds something new. Not generic praise.
-- Do NOT start with "honestly" or "this is" or "great point".
+- Do NOT start with "honestly", "this is", "that's", "great point", or "so true".
 - NEVER use em dashes (— or –).
-- Add a real opinion, observation, or experience. No filler.
+- Add a SPECIFIC opinion, experience, or counterpoint. Include a concrete detail.
+- No vague reactions like "This hits different" or "Needed to hear this".
 """
-    user = f"""Write a smart, meaningful quote comment for this tweet.
-Your comment should add perspective, not just agree.
+    user = f"""Write a smart quote comment that adds YOUR perspective to this tweet.
+Share a specific experience, add a concrete example, or offer a different angle.
+Generic agreement or vague reactions are NOT acceptable.
 
 Tweet being quoted:
 {original_tweet}
@@ -234,14 +240,16 @@ TONE: {tone.replace('_', ' ')}
 
 CRITICAL RULES:
 - Output ONLY the comment text. No quotes, no labels.
-- Do NOT start with "honestly" or "this is" or "great point" or "so true".
+- Do NOT start with "honestly", "this is", "that's", "great point", "so true", "needed this".
 - NEVER use em dashes (— or –). Use commas or periods.
-- Add a real opinion, new angle, or personal experience. No generic agreement.
-- If the tone is "funny_witty", be actually funny, not forced.
-- If the tone is "contrarian", disagree with substance, not just to disagree.
+- Add a SPECIFIC opinion, experience, or example. No generic reactions.
+- Include at least one concrete detail (a tool, a number, a personal story, a scenario).
+- If the tone is "funny_witty", be actually funny with a specific reference, not forced.
+- If the tone is "contrarian", disagree with substance and a concrete reason.
 - Use line breaks between sentences for MEDIUM and LONG comments.
 """
-    user = f"""Write a {length_tier.lower()} reply comment to this tweet.
+    user = f"""Write a {length_tier.lower()} reply to this tweet. Add something specific and valuable.
+Share a personal experience, a concrete example, or a real opinion with supporting detail.
 
 Tweet:
 {original_tweet}

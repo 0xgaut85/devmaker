@@ -50,6 +50,16 @@ BANNED_OPENERS = [
     "so true,",
     "so true ",
     "so true.",
+    "that's the ",
+    "that's so ",
+    "this hits ",
+    "needed this",
+    "needed to hear",
+    "felt this",
+    "say it louder",
+    "real talk",
+    "couldn't agree more",
+    "this right here",
 ]
 
 FORMAT_CATALOG = {

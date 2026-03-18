@@ -67,6 +67,23 @@ def validate_and_fix(text: str, length_tier: str | None = None) -> ValidationRes
         if phrase.lower() in lower:
             return ValidationResult(text, False, f"Contains banned phrase: {phrase}")
 
+    # Reject empty reaction-style posts that reference something not visible
+    _REACTION_PATTERNS = [
+        r"^that'?s\s+(the|so|really|actually|literally)",
+        r"^this hits",
+        r"^needed (this|to hear)",
+        r"^felt this",
+        r"^real talk right here",
+        r"^say it louder",
+    ]
+    for pat in _REACTION_PATTERNS:
+        if re.match(pat, lower):
+            return ValidationResult(text, False, f"Reaction-style post: {pat}")
+
+    # Reject posts that are too short to have substance (under 30 chars with no question mark)
+    if len(text) < 30 and "?" not in text:
+        return ValidationResult(text, False, f"Too short to have substance: {len(text)} chars")
+
     if length_tier and length_tier in ("MEDIUM", "LONG", "XL"):
         sentences = re.split(r"(?<=[.!?])\s+", text)
         if len(sentences) > 2 and "\n" not in text:
