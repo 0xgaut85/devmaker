@@ -28,16 +28,24 @@ function getTextboxContent(element) {
 }
 
 /**
- * Insert text char-by-char at human speed. Used for short texts or as
- * the slow prefix before a paste for longer texts.
+ * Insert text char-by-char at human speed. Uses keyboard event sequence
+ * matching real browser behavior: keydown → beforeinput → DOM change → input → keyup.
+ * document.execCommand("insertText") fires native beforeinput+input automatically;
+ * we add keydown/keyup to satisfy editors that listen for keyboard events.
  */
 async function _typeCharByChar(element, text, minDelay = 25, maxDelay = 70) {
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
-    element.dispatchEvent(new InputEvent("beforeinput", {
-      inputType: "insertText", data: char, bubbles: true, cancelable: true,
+
+    element.dispatchEvent(new KeyboardEvent("keydown", {
+      key: char, bubbles: true, cancelable: true,
     }));
+
     document.execCommand("insertText", false, char);
+
+    element.dispatchEvent(new KeyboardEvent("keyup", {
+      key: char, bubbles: true, cancelable: true,
+    }));
 
     await sleep(randomBetween(minDelay, maxDelay));
 

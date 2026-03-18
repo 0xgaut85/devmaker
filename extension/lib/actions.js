@@ -29,6 +29,13 @@ async function _submitAndVerify(label) {
   const postBtn = document.querySelector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
   if (!postBtn) throw new Error(`${label}: Post button not found`);
 
+  const isDisabled = postBtn.getAttribute("aria-disabled") === "true" ||
+    postBtn.disabled ||
+    postBtn.closest('[aria-disabled="true"]');
+  if (isDisabled) {
+    throw new Error(`${label}: Post button is disabled — editor may not have accepted the text`);
+  }
+
   await humanClick(postBtn);
   await sleep(randomBetween(2500, 4500));
 
