@@ -25,15 +25,49 @@ function _isComposeStillActive() {
   return false;
 }
 
+function _isPostButtonDisabled() {
+  const btn = document.querySelector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
+  if (!btn) return true;
+  return btn.getAttribute("aria-disabled") === "true" ||
+    btn.disabled ||
+    !!btn.closest('[aria-disabled="true"]');
+}
+
+/**
+ * After humanType, verify the Post button is enabled. If not, the editor
+ * didn't accept the text — clear and retry with paste.
+ */
+async function _ensureEditorAccepted(element, text, label) {
+  if (!_isPostButtonDisabled()) return;
+
+  console.log(`[DevMaker] ${label}: Post button disabled after typing — retrying with paste`);
+  await clearTextbox(element);
+  await sleep(randomBetween(300, 600));
+  element.focus();
+  _pasteText(element, text);
+  await sleep(randomBetween(800, 1500));
+
+  if (!_isPostButtonDisabled()) return;
+
+  console.log(`[DevMaker] ${label}: paste also failed, trying char-by-char`);
+  await clearTextbox(element);
+  await sleep(randomBetween(300, 600));
+  element.focus();
+  await sleep(randomBetween(100, 200));
+  await _typeCharByChar(element, text, 8, 25);
+  await sleep(randomBetween(500, 1000));
+
+  if (_isPostButtonDisabled()) {
+    throw new Error(`${label}: Post button still disabled after 3 typing attempts`);
+  }
+}
+
 async function _submitAndVerify(label) {
   const postBtn = document.querySelector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
   if (!postBtn) throw new Error(`${label}: Post button not found`);
 
-  const isDisabled = postBtn.getAttribute("aria-disabled") === "true" ||
-    postBtn.disabled ||
-    postBtn.closest('[aria-disabled="true"]');
-  if (isDisabled) {
-    throw new Error(`${label}: Post button is disabled — editor may not have accepted the text`);
+  if (_isPostButtonDisabled()) {
+    throw new Error(`${label}: Post button is disabled — editor did not accept the text`);
   }
 
   await humanClick(postBtn);
@@ -94,6 +128,7 @@ async function _doPostTweet(params = {}) {
 
   await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
   await sleep(randomBetween(500, 1500));
+  await _ensureEditorAccepted(textbox, text, "post_tweet");
   await _submitAndVerify("post_tweet");
 
   return { status: "ok" };
@@ -127,6 +162,7 @@ async function _doPostComment(params = {}) {
 
   await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 8000);
   await sleep(randomBetween(500, 2000));
+  await _ensureEditorAccepted(replyBox, text, "post_comment");
   await _submitAndVerify("post_comment");
 
   return { status: "ok" };
@@ -169,12 +205,12 @@ async function actionPostThread(params = {}) {
     }
   }
 
-  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
-  if (postBtn) {
-    await sleep(randomBetween(500, 2000));
-    await humanClick(postBtn);
-    await sleep(randomBetween(2000, 4000));
-  }
+  await _ensureEditorAccepted(
+    document.querySelector('[data-testid="tweetTextarea_0"], [role="textbox"]'),
+    tweets[tweets.length - 1],
+    "post_thread"
+  );
+  await _submitAndVerify("post_thread");
 
   return { status: "ok" };
 }
@@ -220,6 +256,7 @@ async function _doQuoteTweet(params = {}) {
 
   await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
   await sleep(randomBetween(500, 1500));
+  await _ensureEditorAccepted(textbox, text, "quote_tweet");
   await _submitAndVerify("quote_tweet");
 
   return { status: "ok" };
@@ -318,15 +355,21 @@ async function actionDismissCompose() {
     const hasContent = textarea && (textarea.textContent || "").trim().length > 0;
     const isInModal = textarea?.closest('[role="dialog"]');
 
+    if (!modal && !textarea) break;
+
     if (modal && (hasContent || textarea)) {
+      if (hasContent) {
+        await clearTextbox(textarea);
+        await sleep(300);
+      }
       const closeBtn = modal.querySelector('[data-testid="app-bar-close"]');
       if (closeBtn) {
         await humanClick(closeBtn);
-        await sleep(400);
+        await sleep(600);
       }
       const discardBtn = document.querySelector('[data-testid="confirmationSheetConfirm"]') ||
         [...document.querySelectorAll('button, [role="button"]')].find((b) =>
-          /discard|don't save|don't keep/i.test(b.textContent || "")
+          /discard|don.?t save|don.?t keep/i.test(b.textContent || "")
         );
       if (discardBtn) {
         await humanClick(discardBtn);

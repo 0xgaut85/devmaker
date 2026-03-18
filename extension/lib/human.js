@@ -28,24 +28,15 @@ function getTextboxContent(element) {
 }
 
 /**
- * Insert text char-by-char at human speed. Uses keyboard event sequence
- * matching real browser behavior: keydown → beforeinput → DOM change → input → keyup.
- * document.execCommand("insertText") fires native beforeinput+input automatically;
- * we add keydown/keyup to satisfy editors that listen for keyboard events.
+ * Insert text char-by-char using execCommand("insertText") which fires
+ * trusted beforeinput+input events. Do NOT add synthetic KeyboardEvents —
+ * they cause DraftJS to double-process the input and corrupt editor state,
+ * leaving the Post button permanently disabled.
  */
 async function _typeCharByChar(element, text, minDelay = 25, maxDelay = 70) {
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
-
-    element.dispatchEvent(new KeyboardEvent("keydown", {
-      key: char, bubbles: true, cancelable: true,
-    }));
-
     document.execCommand("insertText", false, char);
-
-    element.dispatchEvent(new KeyboardEvent("keyup", {
-      key: char, bubbles: true, cancelable: true,
-    }));
 
     await sleep(randomBetween(minDelay, maxDelay));
 
@@ -74,40 +65,31 @@ function _pasteText(element, text) {
 }
 
 /**
- * Type text into a DraftJS editor.
- *  - Short texts (<=150 chars): char-by-char at human speed.
- *  - Long texts (>150 chars): type first 30 chars slowly, paste the rest.
- *    Falls back to fast char-by-char (5-10ms) if paste doesn't register.
+ * Type text into a DraftJS editor. Tries paste first (most reliable for
+ * React editors since it updates both DOM and internal state in one cycle),
+ * then falls back to char-by-char execCommand if paste doesn't register.
  */
 async function humanType(element, text) {
   element.focus();
   await sleep(randomBetween(150, 400));
 
-  if (text.length <= 150) {
-    await _typeCharByChar(element, text);
+  // Attempt 1: clipboard paste (DraftJS handles paste natively)
+  _pasteText(element, text);
+  await sleep(randomBetween(500, 1000));
+
+  const afterPaste = getTextboxContent(element).length;
+  if (afterPaste >= text.trim().length * 0.8) {
+    console.log("[DevMaker] Paste accepted (" + afterPaste + " chars)");
     return;
   }
 
-  // Long text: type prefix slowly, paste the rest
-  const prefixLen = Math.min(30, text.length);
-  const prefix = text.slice(0, prefixLen);
-  const remainder = text.slice(prefixLen);
-
-  await _typeCharByChar(element, prefix);
-  await sleep(randomBetween(300, 700));
-
-  const beforePaste = getTextboxContent(element).length;
-  _pasteText(element, remainder);
-  await sleep(randomBetween(400, 800));
-
-  const afterPaste = getTextboxContent(element).length;
-  if (afterPaste >= beforePaste + remainder.length * 0.5) {
-    return; // paste worked
-  }
-
-  // Paste didn't register — fast char-by-char fallback
-  console.log("[DevMaker] Paste not accepted by DraftJS, falling back to fast typing");
-  await _typeCharByChar(element, remainder, 5, 15);
+  // Attempt 2: char-by-char with execCommand("insertText")
+  console.log("[DevMaker] Paste not accepted (" + afterPaste + " chars), falling back to char-by-char");
+  await clearTextbox(element);
+  await sleep(randomBetween(200, 400));
+  element.focus();
+  await sleep(randomBetween(100, 200));
+  await _typeCharByChar(element, text, 8, 25);
 }
 
 async function humanClick(element) {
