@@ -100,32 +100,45 @@ async function actionPostThread(params = {}) {
 async function actionQuoteTweet(params = {}) {
   const text = params.text || "";
 
+  // Click the retweet/repost button to open the dropdown
   const retweetBtn = document.querySelector('[data-testid="retweet"]');
-  if (retweetBtn) {
-    await humanClick(retweetBtn);
-    await sleep(randomBetween(500, 1000));
-  }
+  if (!retweetBtn) throw new Error("Retweet button not found — cannot quote");
+  await humanClick(retweetBtn);
+  await sleep(randomBetween(800, 1500));
 
-  const quoteOpt = await waitForElement('[role="menuitem"]:last-child, [data-testid="Dropdown"] a');
-  if (quoteOpt) {
-    await humanClick(quoteOpt);
-    await sleep(randomBetween(1000, 2000));
+  // Find the "Quote" option in the dropdown menu
+  const menuItems = document.querySelectorAll('[role="menuitem"]');
+  let quoteOpt = null;
+  for (const item of menuItems) {
+    const label = (item.textContent || "").toLowerCase();
+    if (label.includes("quote")) {
+      quoteOpt = item;
+      break;
+    }
   }
+  // Fallback: last menu item is usually Quote
+  if (!quoteOpt && menuItems.length >= 2) {
+    quoteOpt = menuItems[menuItems.length - 1];
+  }
+  if (!quoteOpt) throw new Error("Quote option not found in menu");
+  await humanClick(quoteOpt);
+  await sleep(randomBetween(1500, 3000));
 
-  const textbox = await waitForElement('[data-testid="tweetTextarea_0"], [role="textbox"]');
-  if (!textbox) throw new Error("Quote textbox not found");
+  // Type into the quote compose textbox
+  const textbox = await waitForElement('[data-testid="tweetTextarea_0"]', 8000);
+  if (!textbox) throw new Error("Quote compose textbox not found");
 
   await humanClick(textbox);
   await sleep(randomBetween(300, 800));
   await humanType(textbox, text);
-  await sleep(randomBetween(500, 1500));
+  await sleep(randomBetween(800, 2000));
 
-  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]');
-  if (postBtn) {
-    await sleep(randomBetween(500, 2000));
-    await humanClick(postBtn);
-    await sleep(randomBetween(2000, 4000));
-  }
+  const postBtn = await waitForElement('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', 5000);
+  if (!postBtn) throw new Error("Quote post button not found");
+
+  await sleep(randomBetween(500, 1500));
+  await humanClick(postBtn);
+  await sleep(randomBetween(2000, 4000));
 
   return { status: "ok" };
 }
@@ -165,11 +178,23 @@ async function actionRetweet(params = {}) {
   if (!retweetBtn) return { status: "error", error: "Retweet button not found" };
 
   await humanClick(retweetBtn);
-  await sleep(randomBetween(500, 1000));
+  await sleep(randomBetween(800, 1500));
 
-  const confirmBtn = await waitForElement('[data-testid="retweetConfirm"], [role="menuitem"]', 3000);
-  if (confirmBtn) {
-    await humanClick(confirmBtn);
+  // Click "Repost" (first menu item) — not "Quote" (second)
+  const menuItems = document.querySelectorAll('[role="menuitem"]');
+  let repostOpt = null;
+  for (const item of menuItems) {
+    const label = (item.textContent || "").toLowerCase();
+    if (label.includes("repost") || label.includes("retweet")) {
+      repostOpt = item;
+      break;
+    }
+  }
+  if (!repostOpt) {
+    repostOpt = await waitForElement('[data-testid="retweetConfirm"], [role="menuitem"]', 3000);
+  }
+  if (repostOpt) {
+    await humanClick(repostOpt);
     await sleep(randomBetween(1000, 2000));
   }
 

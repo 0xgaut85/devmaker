@@ -419,192 +419,170 @@ class Orchestrator:
             if self._cancelled:
                 return False
 
-            tweet_topic = ""
-            tweet_handle = ""
+            # Build a shuffled action plan from available posts
+            post_pool = list(posts)
+            random.shuffle(post_pool)
+            used_urls = set(self.state.get("recent_source_urls", []))
 
-            # 1. TWEET
+            actions = []
             if self._can_act("tweets"):
-                tweet_topic = self._next_topic(enabled)
-                tweet_post = self._pick_post(posts, tweet_topic) or posts[0]
-                tweet_topic = classify_topic(tweet_post["text"], enabled)
-
-                source_urls = self.state.get("recent_source_urls", [])
-                if tweet_post.get("url") in source_urls:
-                    for p in posts:
-                        if p.get("url") not in source_urls and p.get("handle") != tweet_post.get("handle"):
-                            tweet_post = p
-                            tweet_topic = classify_topic(p["text"], enabled)
-                            break
-
-                tweet_handle = tweet_post.get("handle", "")
-                self.log(f"[Tweet] From @{tweet_handle} ({tweet_post.get('likes', 0)} likes)")
-
-                tweet_text = await self._generate_with_dedup(
-                    generate_tweet, cfg=self.cfg,
-                    format_key=format_key, original_tweet=tweet_post["text"],
-                    length_tier=random.choice(["SHORT", "MEDIUM", "LONG"]),
-                    enabled_topics=enabled,
-                )
-
-                if tweet_text:
-                    self.log(f"[Tweet] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
-                    image_urls = tweet_post.get("image_urls", [])
-                    use_images = bool(image_urls) and _images_relevant(tweet_post["text"], tweet_text)
-
-                    await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls if use_images else [])
-                    self.log("[Tweet] Posted.")
-                    self._record_action("tweets")
-                    self._record_posted_text(tweet_text)
-                    self._record_source_url(tweet_post.get("url", ""))
-                    self._record_position_from(tweet_text)
-            else:
-                tweet_post = posts[0]
-                tweet_topic = classify_topic(tweet_post["text"], enabled)
-                tweet_handle = tweet_post.get("handle", "")
-
-            if self._cancelled:
-                return False
-            await self._organic_pause()
-            await self._lurk_scroll()
-
-            # 2. QUOTE RT
-            qrt_topic = tweet_topic
-            qrt_handle = tweet_handle
+                actions.append("tweet")
             if self._can_act("qrts"):
-                qrt_topic = self._next_topic(enabled, exclude=[tweet_topic])
-                qrt_post = self._pick_post(posts, qrt_topic, exclude_handles=[tweet_handle])
-                if not qrt_post:
-                    remaining = [p for p in posts if p.get("handle") != tweet_handle]
-                    qrt_post = remaining[0] if remaining else posts[1 if len(posts) > 1 else 0]
-                qrt_topic = classify_topic(qrt_post["text"], enabled)
-                qrt_handle = qrt_post.get("handle", "")
-
-                self.log(f"[QRT] Quoting @{qrt_handle}")
-                await self._cmd("navigate", url=qrt_post["url"])
-                await self._like_and_bookmark(qrt_post["url"])
-
-                quote_comment = await self._generate_with_dedup(
-                    generate_quote_comment, cfg=self.cfg,
-                    original_tweet=qrt_post["text"],
-                    enabled_topics=enabled,
-                )
-                if quote_comment:
-                    await self._cmd("quote_tweet", post_url=qrt_post["url"], text=quote_comment)
-                    self.log("[QRT] Posted.")
-                    self._record_action("qrts")
-                    self._record_posted_text(quote_comment)
-                    self._record_position_from(quote_comment)
-
-            if self._cancelled:
-                return False
-            await self._organic_pause()
-
-            # 3. PLAIN RT
-            skip_rt = random.random() < 0.2
-            rt_topic = ""
-            if not skip_rt:
-                for p in posts:
-                    if p.get("handle") not in {tweet_handle, qrt_handle}:
-                        rt_topic = classify_topic(p["text"], enabled)
-                        self.log(f"[RT] Reposting @{p.get('handle')}")
-                        await self._cmd("retweet", post_url=p["url"])
-                        self.log("[RT] Done.")
-                        break
-
-            if self._cancelled:
-                return False
-            await self._organic_pause()
-            await self._lurk_scroll()
-
-            # 4. COMMENTS
+                actions.append("qrt")
+            if random.random() > 0.2:
+                actions.append("rt")
             num_comments = random.randint(3, 5)
-            used_handles = {tweet_handle, qrt_handle}
-            comment_posts = [p for p in posts if p.get("handle") not in used_handles][:num_comments]
-            comment_topics_used = []
+            for _ in range(num_comments):
+                if self._can_act("comments"):
+                    actions.append("comment")
+            if random.random() < 0.5:
+                actions.append("follow")
+            if self._should_post_thread() and self._can_act("tweets"):
+                actions.append("thread")
 
-            for i, cp in enumerate(comment_posts):
+            random.shuffle(actions)
+            comment_idx = 0
+            used_handles = set()
+
+            for action in actions:
                 if self._cancelled:
                     return False
-                if not self._can_act("comments"):
-                    break
-                length = comment_rotation[i] if i < len(comment_rotation) else "MEDIUM"
-                tone = self._next_tone(i + self.state.get("sequence_number", 0))
-                ptype, pstrategy, _ = self._classify_post(cp["text"])
-                self.log(f"[Comment {i+1}/{num_comments}] @{cp.get('handle')} | {length} | {tone}")
 
-                await self._cmd("navigate", url=cp["url"])
-                await self._like_and_bookmark(cp["url"])
-                existing_replies = await self._scrape_reply_context(cp["url"])
-                positions = self._get_positions_for(cp["text"])
+                # Pick next unused post from pool
+                available = [p for p in post_pool if p.get("url") not in used_urls and p.get("handle") not in used_handles]
+                if not available:
+                    available = [p for p in post_pool if p.get("handle") not in used_handles]
+                if not available:
+                    available = post_pool
+                post = available[0] if available else post_pool[0]
 
-                comment_text = await self._generate_with_dedup(
-                    generate_reply_comment, cfg=self.cfg,
-                    original_tweet=cp["text"], length_tier=length, tone=tone,
-                    post_type=ptype, reply_strategy=pstrategy,
-                    existing_replies=existing_replies, positions=positions,
-                    enabled_topics=enabled,
-                )
-                if comment_text:
-                    await self._cmd("post_comment", post_url=cp["url"], text=comment_text)
-                    self.log(f"  -> Posted.")
-                    self._record_action("comments")
-                    self._record_posted_text(comment_text)
-                    self._record_position_from(comment_text)
-                    comment_topics_used.append(classify_topic(cp["text"], enabled))
+                if action == "tweet":
+                    topic_post = self._pick_post(available, self._next_topic(enabled)) or post
+                    self.log(f"[Tweet] From @{topic_post.get('handle')} ({topic_post.get('likes', 0)} likes)")
+                    tweet_text = await self._generate_with_dedup(
+                        generate_tweet, cfg=self.cfg,
+                        format_key=format_key, original_tweet=topic_post["text"],
+                        length_tier=random.choice(["SHORT", "MEDIUM", "LONG"]),
+                        enabled_topics=enabled,
+                    )
+                    if tweet_text:
+                        self.log(f"[Tweet] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
+                        image_urls = topic_post.get("image_urls", [])
+                        use_images = bool(image_urls) and _images_relevant(topic_post["text"], tweet_text)
+                        await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls if use_images else [])
+                        self.log("[Tweet] Posted.")
+                        self._record_action("tweets")
+                        self._record_posted_text(tweet_text)
+                        self._record_source_url(topic_post.get("url", ""))
+                        self._record_position_from(tweet_text)
+                        used_urls.add(topic_post.get("url", ""))
+                        used_handles.add(topic_post.get("handle", ""))
 
-                if i < len(comment_posts) - 1:
-                    await self._organic_pause(short=True)
+                elif action == "qrt":
+                    self.log(f"[QRT] Quoting @{post.get('handle')}")
+                    await self._cmd("navigate", url=post["url"])
+                    await self._like_and_bookmark(post["url"])
+                    quote_comment = await self._generate_with_dedup(
+                        generate_quote_comment, cfg=self.cfg,
+                        original_tweet=post["text"],
+                        enabled_topics=enabled,
+                    )
+                    if quote_comment:
+                        try:
+                            await self._cmd("quote_tweet", post_url=post["url"], text=quote_comment)
+                            self.log(f"[QRT] Posted: {quote_comment[:60]}...")
+                            self._record_action("qrts")
+                            self._record_posted_text(quote_comment)
+                            self._record_position_from(quote_comment)
+                        except Exception as e:
+                            self.log(f"[QRT] Failed: {e}")
+                        used_urls.add(post.get("url", ""))
+                        used_handles.add(post.get("handle", ""))
 
-            # 4b. THREAD
-            if self._should_post_thread() and self._can_act("tweets"):
-                self.log("[Thread] Generating thread...")
-                thread_format = self._next_thread_format()
-                thread_tweets = generate_thread(
-                    cfg=self.cfg, thread_format_key=thread_format,
-                    original_tweet=posts[0]["text"], recent_posts=self._recent_posts(),
-                    enabled_topics=enabled,
-                )
-                if thread_tweets:
-                    await self._cmd("post_thread", tweets=thread_tweets)
-                    self.log(f"[Thread] Posted {len(thread_tweets)}-tweet thread.")
-                    self._record_action("tweets")
-                    self.state["thread_last_format"] = thread_format
-                    for t in thread_tweets:
-                        self._record_posted_text(t)
+                elif action == "rt":
+                    self.log(f"[RT] Reposting @{post.get('handle')}")
+                    try:
+                        await self._cmd("retweet", post_url=post["url"])
+                        self.log("[RT] Done.")
+                    except Exception as e:
+                        self.log(f"[RT] Failed: {e}")
+                    used_urls.add(post.get("url", ""))
+                    used_handles.add(post.get("handle", ""))
 
-            # 5. FOLLOWS
-            num_follows = random.randint(1, 3)
-            try:
-                resp = await self._cmd("scrape_who_to_follow")
-                who_to_follow = resp.get("data", [])
-            except Exception:
-                who_to_follow = []
+                elif action == "comment":
+                    if not self._can_act("comments"):
+                        continue
+                    length = comment_rotation[comment_idx] if comment_idx < len(comment_rotation) else "MEDIUM"
+                    tone = self._next_tone(comment_idx + seq_num)
+                    ptype, pstrategy, _ = self._classify_post(post["text"])
+                    self.log(f"[Comment] @{post.get('handle')} | {length} | {tone}")
+                    await self._cmd("navigate", url=post["url"])
+                    await self._like_and_bookmark(post["url"])
+                    existing_replies = await self._scrape_reply_context(post["url"])
+                    positions = self._get_positions_for(post["text"])
+                    comment_text = await self._generate_with_dedup(
+                        generate_reply_comment, cfg=self.cfg,
+                        original_tweet=post["text"], length_tier=length, tone=tone,
+                        post_type=ptype, reply_strategy=pstrategy,
+                        existing_replies=existing_replies, positions=positions,
+                        enabled_topics=enabled,
+                    )
+                    if comment_text:
+                        await self._cmd("post_comment", post_url=post["url"], text=comment_text)
+                        self.log(f"  -> Posted.")
+                        self._record_action("comments")
+                        self._record_posted_text(comment_text)
+                        self._record_position_from(comment_text)
+                    used_urls.add(post.get("url", ""))
+                    used_handles.add(post.get("handle", ""))
+                    comment_idx += 1
 
-            followed = []
-            last_follows = self.state.get("last_follows", [])
-            for handle in who_to_follow:
-                if len(followed) >= num_follows:
-                    break
-                if not self._can_act("follows"):
-                    break
-                if handle in last_follows:
-                    continue
-                try:
-                    await self._cmd("follow_user", handle=handle)
-                    followed.append(handle)
-                    self._record_action("follows")
-                    self.log(f"[Follow] Followed @{handle}.")
-                except Exception:
-                    pass
+                elif action == "follow":
+                    try:
+                        resp2 = await self._cmd("scrape_who_to_follow")
+                        who_to_follow = resp2.get("data", [])
+                    except Exception:
+                        who_to_follow = []
+                    last_follows = self.state.get("last_follows", [])
+                    for handle in who_to_follow[:2]:
+                        if not self._can_act("follows"):
+                            break
+                        if handle in last_follows:
+                            continue
+                        try:
+                            await self._cmd("follow_user", handle=handle)
+                            self._record_action("follows")
+                            self.log(f"[Follow] Followed @{handle}.")
+                            last_follows.append(handle)
+                        except Exception:
+                            pass
+                    self.state["last_follows"] = last_follows
+
+                elif action == "thread":
+                    self.log("[Thread] Generating thread...")
+                    thread_format = self._next_thread_format()
+                    thread_tweets = generate_thread(
+                        cfg=self.cfg, thread_format_key=thread_format,
+                        original_tweet=post["text"], recent_posts=self._recent_posts(),
+                        enabled_topics=enabled,
+                    )
+                    if thread_tweets:
+                        await self._cmd("post_thread", tweets=thread_tweets)
+                        self.log(f"[Thread] Posted {len(thread_tweets)}-tweet thread.")
+                        self._record_action("tweets")
+                        self.state["thread_last_format"] = thread_format
+                        for t in thread_tweets:
+                            self._record_posted_text(t)
+
+                # Organic pause between actions (like a real person browsing)
+                if random.random() < 0.4:
+                    await self._lurk_scroll(random.randint(1, 3))
+                await self._organic_pause(short=random.random() < 0.5)
 
             # SAVE STATE
             self.state["sequence_number"] = seq_num
             self.state["last_format"] = format_key
-            self.state["last_topic_tweet"] = tweet_topic
-            self.state["last_topic_qrt"] = qrt_topic
-            self.state["last_topic_rt"] = rt_topic
             self.state["last_comment_rotation"] = comment_rotation
-            self.state["last_follows"] = followed
             self.log(f"=== DEV SEQUENCE {seq_num} COMPLETE ===")
             return True
 
