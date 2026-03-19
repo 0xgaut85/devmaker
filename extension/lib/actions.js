@@ -8,6 +8,36 @@
 
 const _ACTION_TIMEOUT_MS = 120000;
 
+async function _attachImages(imageUrls) {
+  if (!imageUrls || imageUrls.length === 0) return;
+
+  const fileInput = document.querySelector('input[type="file"][accept*="image"]') ||
+    document.querySelector('input[type="file"]');
+  if (!fileInput) {
+    console.log("[DevMaker] No file input found for image upload");
+    return;
+  }
+
+  const dt = new DataTransfer();
+  for (const url of imageUrls.slice(0, 4)) {
+    try {
+      const resp = await fetch(url, { credentials: "omit" });
+      if (!resp.ok) continue;
+      const blob = await resp.blob();
+      const ext = (blob.type || "image/jpeg").split("/")[1] || "jpg";
+      dt.items.add(new File([blob], `img_${Date.now()}_${dt.files.length}.${ext}`, { type: blob.type || "image/jpeg" }));
+    } catch (err) {
+      console.log("[DevMaker] Failed to fetch image:", url.slice(0, 60), err.message);
+    }
+  }
+
+  if (dt.files.length === 0) return;
+  fileInput.files = dt.files;
+  fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+  console.log(`[DevMaker] Attached ${dt.files.length} image(s)`);
+  await sleep(randomBetween(1500, 3000));
+}
+
 function _withTimeout(fn, label) {
   return (params) => Promise.race([
     fn(params),
@@ -89,6 +119,7 @@ async function _submitAndVerify(label) {
 
 async function _doPostTweet(params = {}) {
   const text = params.text || "";
+  const imageUrls = params.image_urls || [];
 
   const existingDialog = document.querySelector('[data-testid="tweetTextarea_0"]');
   if (existingDialog && (existingDialog.textContent || "").trim().length > 0) {
@@ -113,6 +144,10 @@ async function _doPostTweet(params = {}) {
 
   const textbox = await waitForElement('[data-testid="tweetTextarea_0"]', 8000);
   if (!textbox) throw new Error("Tweet compose textbox not found");
+
+  if (imageUrls.length > 0) {
+    await _attachImages(imageUrls);
+  }
 
   await humanClick(textbox);
   await sleep(randomBetween(300, 800));

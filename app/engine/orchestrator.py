@@ -512,9 +512,8 @@ class Orchestrator:
                     if tweet_text:
                         self.log(f"[Tweet] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
                         image_urls = topic_post.get("image_urls", [])
-                        use_images = bool(image_urls) and _images_relevant(topic_post["text"], tweet_text)
                         try:
-                            await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls if use_images else [])
+                            await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls)
                             self.log("[Tweet] Posted.")
                             self._record_action("tweets")
                             self._record_posted_text(tweet_text)
@@ -782,9 +781,8 @@ class Orchestrator:
                 )
                 if tweet_text:
                     image_urls = tweet_post.get("image_urls", [])
-                    use_images = bool(image_urls) and _images_relevant(tweet_post["text"], tweet_text)
                     try:
-                        await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls if use_images else [])
+                        await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls)
                         self.log("[Degen Tweet] Posted.")
                         self._record_action("tweets")
                         self._record_posted_text(tweet_text)
