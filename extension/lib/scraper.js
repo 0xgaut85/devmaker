@@ -260,4 +260,25 @@ async function scrapePerformance(params = {}) {
   return results;
 }
 
+async function scrapeOwnProfile(params = {}) {
+  const maxPosts = params.max_posts || 3;
+  const posts = [];
+  const seenUrls = new Set();
+  const articles = document.querySelectorAll('article[data-testid="tweet"]');
+
+  for (let i = 0; i < Math.min(articles.length, maxPosts + 5); i++) {
+    if (posts.length >= maxPosts) break;
+    try {
+      const article = articles[i];
+      const ctx = article.querySelector('[data-testid="socialContext"]');
+      if (ctx) continue;
+      const post = extractPost(article);
+      if (!post || seenUrls.has(post.url)) continue;
+      seenUrls.add(post.url);
+      posts.push(post);
+    } catch {}
+  }
+  return posts;
+}
+
 // sleep, humanScroll, randomBetween are provided by human.js (loaded first)

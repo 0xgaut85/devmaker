@@ -9,6 +9,7 @@ const COMMAND_HANDLERS = {
   scrape_who_to_follow: async () => ({ status: "ok", data: await scrapeWhoToFollow() }),
   scrape_retweets: async (params) => ({ status: "ok", data: await scrapeRetweets(params) }),
   scrape_performance: async (params) => ({ status: "ok", data: await scrapePerformance(params) }),
+  scrape_own_profile: async (params) => ({ status: "ok", data: await scrapeOwnProfile(params) }),
 
   post_tweet: async (params) => await actionPostTweet(params),
   post_comment: async (params) => await actionPostComment(params),

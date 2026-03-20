@@ -50,6 +50,11 @@ async def start_sequence(account_id: str, count: int = 1) -> bool:
         return False
 
     async with async_session() as session:
+        acct_result = await session.execute(
+            select(Account).where(Account.id == account_id)
+        )
+        acct_obj = acct_result.scalar_one_or_none()
+
         result = await session.execute(
             select(Config).where(Config.account_id == account_id)
         )
@@ -68,6 +73,7 @@ async def start_sequence(account_id: str, count: int = 1) -> bool:
             await session.commit()
 
         cfg_dict = _config_to_dict(cfg_obj)
+        cfg_dict["account_handle"] = acct_obj.name if acct_obj else ""
         state_dict = _state_to_dict(st_obj)
 
     async def log_fn(msg: str, level: str = "info"):

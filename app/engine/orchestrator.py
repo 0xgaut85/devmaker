@@ -88,6 +88,24 @@ _IMAGE_STOPWORDS = frozenset({
 })
 
 
+_SELFIE_KEYWORDS = frozenset({
+    "selfie", "me today", "fit check", "ootd", "new hair", "got dressed",
+    "mirror pic", "no filter", "feeling cute", "just me", "my face",
+    "new profile", "headshot", "portrait of me",
+})
+
+
+def _is_likely_personal_photo(post: dict) -> bool:
+    imgs = post.get("image_urls", [])
+    if len(imgs) != 1:
+        return False
+    text = post.get("text", "").strip()
+    if len(text) < 30:
+        return True
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in _SELFIE_KEYWORDS)
+
+
 def _images_relevant(source_text: str, generated_text: str) -> bool:
     source_words = set(source_text.lower().split()) - _IMAGE_STOPWORDS
     gen_words = set(generated_text.lower().split()) - _IMAGE_STOPWORDS
@@ -174,6 +192,11 @@ class Orchestrator:
             idx = (FORMAT_ORDER.index(last) + 1) % len(FORMAT_ORDER)
         return FORMAT_ORDER[idx]
 
+    def _topic_weight(self, topic: str) -> float:
+        topics = self.cfg.get("topics", {})
+        degen = self.cfg.get("degen_topics", {})
+        return float(topics.get(topic, 0) or degen.get(topic, 0) or 1)
+
     def _next_topic(self, enabled: list[str], exclude: list[str] | None = None) -> str:
         exclude = exclude or []
         recent = {self.state.get("last_topic_tweet", ""), self.state.get("last_topic_qrt", ""), self.state.get("last_topic_rt", "")}
@@ -183,7 +206,8 @@ class Orchestrator:
             available = [t for t in enabled if t not in exclude]
         if not available:
             available = enabled
-        return random.choice(available)
+        weights = [self._topic_weight(t) for t in available]
+        return random.choices(available, weights=weights, k=1)[0]
 
     def _next_comment_rotation(self) -> list[str]:
         last = self.state.get("last_comment_rotation", [])
@@ -269,6 +293,24 @@ class Orchestrator:
         if url not in urls:
             urls.append(url)
         self.state["recent_source_urls"] = urls[-50:]
+
+    async def _seed_dedup_from_own_profile(self):
+        handle = self.cfg.get("account_handle", "")
+        if not handle:
+            return
+        try:
+            resp = await self._cmd("scrape_own_profile", handle=handle, max_posts=3)
+            own_posts = resp.get("data", [])
+            if own_posts:
+                texts = self.state.setdefault("recent_posted_texts", [])
+                for p in own_posts:
+                    t = p.get("text", "").strip()
+                    if t and t not in texts:
+                        texts.append(t)
+                self.state["recent_posted_texts"] = texts[-30:]
+                self.log(f"[Dedup] Seeded {len(own_posts)} recent own tweets for redundancy check.")
+        except Exception as e:
+            self.log(f"[Dedup] Could not scrape own profile: {e}")
 
     # -- Active hours --
 
@@ -433,6 +475,8 @@ class Orchestrator:
             seq_num = self.state.get("sequence_number", 0) + 1
             self.log(f"=== DEV SEQUENCE {seq_num} | Format: {format_key} ({FORMAT_CATALOG[format_key]['name']}) ===")
 
+            await self._seed_dedup_from_own_profile()
+
             following = self._use_following()
             self.log(f"Scraping timeline ({'Following' if following else 'For You'})...")
             resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5, use_following_tab=following)
@@ -500,7 +544,8 @@ class Orchestrator:
                     post = available[0]
 
                 if action == "tweet":
-                    topic_post = self._pick_post(available, self._next_topic(enabled)) or post
+                    tweet_topic = self._next_topic(enabled)
+                    topic_post = self._pick_post(available, tweet_topic) or post
                     used_urls.add(topic_post.get("url", ""))
                     self.log(f"[Tweet] From @{topic_post.get('handle')} ({topic_post.get('likes', 0)} likes)")
                     tweet_text = await self._generate_with_dedup(
@@ -519,6 +564,7 @@ class Orchestrator:
                             self._record_posted_text(tweet_text)
                             self._record_source_url(topic_post.get("url", ""))
                             self._record_position_from(tweet_text)
+                            self.state["last_topic_tweet"] = tweet_topic
                         except Exception as e:
                             self.log(f"[Tweet] Failed: {e}")
                             await self._dismiss_compose_safe()
@@ -548,6 +594,7 @@ class Orchestrator:
                             self._record_action("qrts")
                             self._record_posted_text(quote_comment)
                             self._record_position_from(quote_comment)
+                            self.state["last_topic_qrt"] = post.get("_topic", "")
                         except Exception as e:
                             self.log(f"[QRT] Failed: {e}")
                             await self._dismiss_compose_safe()
@@ -565,6 +612,7 @@ class Orchestrator:
                     try:
                         await self._cmd("retweet", post_url=post["url"])
                         self.log("[RT] Done.")
+                        self.state["last_topic_rt"] = post.get("_topic", "")
                     except Exception as e:
                         self.log(f"[RT] Failed: {e}")
 
@@ -756,6 +804,8 @@ class Orchestrator:
             seq_num = self.state.get("degen_sequence_number", 0) + 1
             self.log(f"=== DEGEN SEQUENCE {seq_num} | Format: {format_key} ===")
 
+            await self._seed_dedup_from_own_profile()
+
             resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5, use_following_tab=self._use_following())
             posts = resp.get("data", [])
             if len(posts) < 3:
@@ -768,7 +818,12 @@ class Orchestrator:
 
             # 1. DEGEN TWEET
             if self._can_act("tweets"):
-                tweet_post = next((p for p in posts if p.get("url") not in used_urls), posts[0])
+                unused = [p for p in posts if p.get("url") not in used_urls]
+                if unused:
+                    unused.sort(key=lambda p: max(p.get("likes", 0), 1) * (2.0 if p.get("image_urls") and not _is_likely_personal_photo(p) else 1.0), reverse=True)
+                    tweet_post = unused[0]
+                else:
+                    tweet_post = posts[0]
                 used_urls.add(tweet_post.get("url", ""))
 
                 tweet_topic = classify_topic(tweet_post["text"], enabled, DEGEN_TOPIC_KEYWORDS)
@@ -1073,9 +1128,23 @@ class Orchestrator:
     def _pick_post(self, posts: list[dict], target_topic: str,
                    exclude_handles: list[str] | None = None) -> dict | None:
         exclude_handles = exclude_handles or []
+        candidates = []
         for p in posts:
             if p.get("handle") in exclude_handles:
                 continue
             if classify_topic(p.get("text", ""), [target_topic]) == target_topic:
-                return p
-        return None
+                candidates.append(p)
+
+        if not candidates:
+            return None
+
+        def _score(p: dict) -> float:
+            likes = max(p.get("likes", 0), 1)
+            has_images = bool(p.get("image_urls"))
+            image_boost = 2.0 if has_images else 1.0
+            if has_images and _is_likely_personal_photo(p):
+                image_boost = 0.5
+            return likes * image_boost
+
+        candidates.sort(key=_score, reverse=True)
+        return candidates[0]

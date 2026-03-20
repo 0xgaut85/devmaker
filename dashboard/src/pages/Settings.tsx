@@ -250,29 +250,22 @@ function Slider({ label, sublabel, value, onChange }: { label: string; sublabel:
 }
 
 const TOPICS_GENERAL = [
-  "Technology", "AI & Machine Learning", "Software Development", "Programming",
-  "Web Development", "Mobile Dev", "DevOps & Cloud", "Cybersecurity",
-  "Open Source", "Startups", "Entrepreneurship", "Product Management",
-  "SaaS", "Venture Capital", "Finance", "Trading & Markets",
-  "Cryptocurrency", "DeFi", "Economics", "Geopolitics",
-  "World News", "US Politics", "Science", "Space & Astronomy",
-  "Climate & Energy", "Health & Wellness", "Psychology", "Philosophy",
-  "Design & UX", "Marketing", "Growth Hacking", "SEO",
-  "Social Media", "Content Creation", "Productivity", "Remote Work",
-  "Career Advice", "Leadership", "Data Science", "Robotics",
-  "Gaming", "Esports", "Music", "Film & TV",
-  "Books & Reading", "Art & Culture", "Sports", "Fitness",
-  "Food & Cooking", "Travel", "Education", "Self Improvement",
+  "Database / backend", "Frontend / UI / UX", "DevOps / infra",
+  "AI / ML tools", "Open source", "Startup / founder life",
+  "Career / growth", "Developer tools / productivity", "Product thinking",
+  "Hardware / gadgets", "Remote work / async", "Side projects",
+  "Security / privacy", "Technical debt / refactoring", "Pricing / monetization",
+  "API design", "Mobile / cross-platform", "Data / analytics",
+  "Community / content creation", "Entrepreneurship", "Economics",
+  "AI / future of AI", "Philosophy of tech", "AI agents",
+  "Robotics / physical tech", "Current events / news", "Culture / memes / takes",
 ];
 
 const TOPICS_DEGEN = [
-  "Crypto Trading", "Bitcoin", "Ethereum", "Solana",
-  "Memecoins", "NFTs", "DeFi Protocols", "Yield Farming",
-  "Airdrops", "Token Launches", "DEX Trading", "On-chain Analysis",
-  "Crypto News", "Altcoins", "Layer 2", "Web3 Gaming",
-  "DAO Governance", "Tokenomics", "Whale Watching", "Alpha Calls",
-  "Presales", "Rug Pulls & Scams", "CEX Listings", "Crypto Regulation",
-  "Stablecoins", "Derivatives & Perps", "Bridge & Cross-chain", "Crypto Culture",
+  "BTC / Bitcoin", "ETH / Ethereum", "Solana / SOL",
+  "Meme coins", "DeFi", "NFTs",
+  "Market analysis", "Airdrops / Farming", "Layer 2s",
+  "Crypto news", "Trading / Charts", "Regulation / Policy",
 ];
 
 function TopicsPicker({ value, onChange, preset }: {

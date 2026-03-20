@@ -160,6 +160,11 @@ function connectWs() {
         }
       }
 
+      // --- scrape_own_profile: navigate to own profile first ---
+      if (cmd === "scrape_own_profile" && params.handle) {
+        await navigateTab(tab.id, `https://x.com/${params.handle}`);
+      }
+
       const response = await sendToContent(tab.id, cmd, params);
       sendResponse(reqId, cmd, response.status || "ok", response.data, response.error);
     } catch (err) {
