@@ -298,47 +298,52 @@ function TopicsPicker({ value, onChange, preset }: {
     setCustomTopic("");
   }
 
-  const enabledTopics = allTopics.filter((t) => value[t] !== undefined);
-  const disabledTopics = allTopics.filter((t) => value[t] === undefined);
-
   return (
     <div>
-      {enabledTopics.length > 0 && (
-        <div className="space-y-1.5 mb-4">
-          {enabledTopics.map((topic) => (
-            <div key={topic} className="flex items-center gap-2 bg-neutral-800/60 rounded-lg px-3 py-1.5">
-              <button onClick={() => toggle(topic)} className="text-green-400 hover:text-red-400 text-sm shrink-0" title="Remove">✓</button>
-              <span className="text-sm text-white flex-1 truncate">{topic}</span>
-              <div className="flex items-center gap-1">
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => setWeight(topic, n)}
-                    className={`w-5 h-5 rounded text-[10px] font-mono transition-colors ${
-                      n <= (value[topic] ?? 3)
-                        ? "bg-white text-black"
-                        : "bg-neutral-700 text-neutral-500 hover:bg-neutral-600"
-                    }`}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
+      <div className="space-y-1.5 mb-4">
+        {allTopics.map((topic) => {
+          const enabled = value[topic] !== undefined;
+          return (
+            <div
+              key={topic}
+              className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-colors cursor-pointer ${
+                enabled
+                  ? "bg-neutral-800/80 border border-neutral-700"
+                  : "bg-neutral-900/40 border border-neutral-800/50 opacity-50"
+              }`}
+              onClick={() => !enabled && toggle(topic)}
+            >
+              <button
+                onClick={(e) => { e.stopPropagation(); toggle(topic); }}
+                className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                  enabled
+                    ? "bg-green-500 border-green-500 text-black"
+                    : "bg-transparent border-neutral-600 hover:border-neutral-400"
+                }`}
+              >
+                {enabled && <span className="text-[10px] font-bold leading-none">✓</span>}
+              </button>
+              <span className={`text-sm flex-1 truncate ${enabled ? "text-white" : "text-neutral-500"}`}>{topic}</span>
+              {enabled && (
+                <div className="flex items-center gap-1">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      onClick={(e) => { e.stopPropagation(); setWeight(topic, n); }}
+                      className={`w-5 h-5 rounded text-[10px] font-mono transition-colors ${
+                        n <= (value[topic] ?? 3)
+                          ? "bg-white text-black"
+                          : "bg-neutral-700 text-neutral-500 hover:bg-neutral-600"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-      )}
-
-      <div className="flex flex-wrap gap-1.5 mb-3">
-        {disabledTopics.map((topic) => (
-          <button
-            key={topic}
-            onClick={() => toggle(topic)}
-            className="px-2.5 py-1 rounded-full text-xs text-neutral-400 bg-neutral-800 border border-neutral-700 hover:border-neutral-500 hover:text-white transition-colors"
-          >
-            + {topic}
-          </button>
-        ))}
+          );
+        })}
       </div>
 
       <div className="flex items-center gap-2">

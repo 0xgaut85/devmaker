@@ -45,20 +45,33 @@ TOPIC_KEYWORDS = {
     "Mobile / cross-platform": ["mobile", "react native", "flutter", "ios", "android", "pwa", "swift", "kotlin"],
     "Data / analytics": ["analytics", "metrics", "dashboard", "data pipeline", "observability", "datadog"],
     "Community / content creation": ["newsletter", "blog", "content", "audience", "writing", "creator", "youtube", "podcast"],
-    "Entrepreneurship": ["entrepreneur", "bootstrap", "indie hacker", "saas", "acquisition", "exit", "business"],
-    "Economics": ["economy", "market", "inflation", "policy", "macro", "gdp", "trade"],
-    "AI / future of AI": ["agi", "ai agent", "artificial intelligence", "automation", "future of", "singularity"],
+    "Entrepreneurship": ["entrepreneur", "bootstrap", "indie hacker", "saas", "acquisition", "exit", "business model"],
+    "Economics": ["macroeconomics", "microeconomics", "gdp growth", "inflation rate", "interest rate", "monetary policy", "fiscal policy", "supply chain economics"],
+    "AI / future of AI": ["agi", "artificial intelligence", "automation", "future of ai", "singularity", "superintelligence"],
     "Philosophy of tech": ["ethics", "digital minimalism", "philosophy", "agi risk", "alignment"],
-    "AI agents": ["agent", "tool use", "multi-agent", "autonomous", "agentic", "crew", "langchain", "langgraph"],
+    "AI agents": ["ai agent", "tool use", "multi-agent", "autonomous agent", "agentic", "crew", "langchain", "langgraph"],
     "Robotics / physical tech": ["robot", "drone", "embodied", "humanoid", "physical ai", "manufacturing"],
-    "Current events / news": ["breaking", "announced", "just launched", "update", "released"],
-    "Culture / memes / takes": ["meme", "hot take", "viral", "discourse", "ratio", "timeline"],
+    "Current events / news": ["just launched", "just shipped", "now available", "new release", "open sourced"],
+    "Culture / memes / takes": ["meme", "hot take", "viral tweet", "discourse", "ratio"],
 }
 
-_RT_BLOCKLIST = [
+_POST_BLOCKLIST = [
+    # US politics
     "vote", "voting", "election", "candidate", "democrat", "republican", "trump",
     "biden", "kamala", "governor", "senator", "congress", "political", "ballot",
-    "campaign trail", "maga", "liberal", "conservative",
+    "campaign trail", "maga", "liberal", "conservative", "white house",
+    "supreme court", "gop", "dnc", "rnc", "impeach",
+    # International politics
+    "modi", "bjp", "parliament", "lok sabha", "rajya sabha", "delhi",
+    "mumbai police", "hindutva", "caste", "communal",
+    "brexit", "tory", "labour party", "starmer", "sunak",
+    "macron", "eu commission", "bundestag", "putin", "zelensky", "nato",
+    "genocide", "apartheid", "refugee crisis", "sanctions",
+    "minister", "ministry", "legislation", "prime minister",
+    # Generic politics / news noise
+    "breaking news", "just in:", "developing:", "war on", "protest",
+    "arrested", "sentenced", "indicted", "scandal", "corruption",
+    # Spam / promo
     "launching soon", "pre-order", "use code", "discount code", "promo code",
     "giveaway", "giving away", "drop your wallet", "airdrop claim",
     "link in bio", "sign up now", "limited time", "act fast", "don't miss",
@@ -68,12 +81,15 @@ _RT_BLOCKLIST = [
 ]
 
 
+def _is_post_blocked(post: dict) -> bool:
+    text = post.get("text", "").lower()
+    return any(blocked in text for blocked in _POST_BLOCKLIST)
+
+
 def _is_rt_worthy(post: dict, enabled_topics: list[str]) -> bool:
     """Check if a post is worth retweeting — on-topic and not junk/promo/political."""
-    text = post.get("text", "").lower()
-    for blocked in _RT_BLOCKLIST:
-        if blocked in text:
-            return False
+    if _is_post_blocked(post):
+        return False
     topic = post.get("_topic", "")
     if topic and topic in enabled_topics:
         return True
@@ -246,7 +262,7 @@ class Orchestrator:
             "tweets": self.cfg.get("daily_max_tweets", 8),
             "comments": self.cfg.get("daily_max_comments", 25),
             "likes": self.cfg.get("daily_max_likes", 50),
-            "follows": self.cfg.get("daily_max_follows", 10),
+            "follows": self.cfg.get("daily_max_follows", 30),
             "qrts": self.cfg.get("daily_max_qrts", 5),
         }
 
@@ -311,6 +327,48 @@ class Orchestrator:
                 self.log(f"[Dedup] Seeded {len(own_posts)} recent own tweets for redundancy check.")
         except Exception as e:
             self.log(f"[Dedup] Could not scrape own profile: {e}")
+
+    # -- Follow helper --
+
+    async def _do_follows(self, post_pool: list[dict]):
+        target_follows = random.randint(7, 8)
+        followed = 0
+        last_follows = self.state.get("last_follows", [])
+
+        try:
+            resp2 = await self._cmd("scrape_who_to_follow")
+            who_to_follow = resp2.get("data", [])
+        except Exception:
+            who_to_follow = []
+
+        timeline_handles = list({
+            p.get("handle") for p in post_pool
+            if p.get("handle") and p.get("handle") not in last_follows
+        })
+        random.shuffle(timeline_handles)
+
+        candidates = []
+        for h in who_to_follow:
+            if h not in last_follows and h not in candidates:
+                candidates.append(h)
+        for h in timeline_handles:
+            if h not in candidates:
+                candidates.append(h)
+
+        for handle in candidates:
+            if followed >= target_follows or not self._can_act("follows"):
+                break
+            try:
+                await self._cmd("follow_user", handle=handle)
+                self._record_action("follows")
+                self.log(f"[Follow] Followed @{handle}.")
+                last_follows.append(handle)
+                followed += 1
+                await self._organic_pause(short=True)
+            except Exception:
+                pass
+        self.state["last_follows"] = last_follows[-100:]
+        self.log(f"[Follow] Followed {followed}/{target_follows} accounts.")
 
     # -- Active hours --
 
@@ -490,6 +548,9 @@ class Orchestrator:
             for p in posts:
                 p["_topic"] = classify_topic(p.get("text", ""), enabled)
 
+            posts = [p for p in posts if not _is_post_blocked(p)]
+            self.log(f"After blocklist filter: {len(posts)} posts.")
+
             on_topic = [p for p in posts if p["_topic"] in enabled]
             if len(on_topic) >= 3:
                 posts = on_topic
@@ -504,9 +565,12 @@ class Orchestrator:
             if self._cancelled:
                 return False
 
-            # Build a shuffled action plan from available posts
-            post_pool = list(posts)
-            random.shuffle(post_pool)
+            # Build action plan — on-topic posts first, then off-topic (shuffled within each group)
+            on_topic_pool = [p for p in posts if p.get("_topic") in enabled]
+            off_topic_pool = [p for p in posts if p.get("_topic") not in enabled]
+            random.shuffle(on_topic_pool)
+            random.shuffle(off_topic_pool)
+            post_pool = on_topic_pool + off_topic_pool
             used_urls = set(self.state.get("recent_source_urls", []))
 
             actions = []
@@ -520,8 +584,7 @@ class Orchestrator:
             for _ in range(num_comments):
                 if self._can_act("comments"):
                     actions.append("comment")
-            if random.random() < 0.5:
-                actions.append("follow")
+            actions.append("follow")
             if self._should_post_thread() and self._can_act("tweets"):
                 actions.append("thread")
 
@@ -651,25 +714,7 @@ class Orchestrator:
                     comment_idx += 1
 
                 elif action == "follow":
-                    try:
-                        resp2 = await self._cmd("scrape_who_to_follow")
-                        who_to_follow = resp2.get("data", [])
-                    except Exception:
-                        who_to_follow = []
-                    last_follows = self.state.get("last_follows", [])
-                    for handle in who_to_follow[:2]:
-                        if not self._can_act("follows"):
-                            break
-                        if handle in last_follows:
-                            continue
-                        try:
-                            await self._cmd("follow_user", handle=handle)
-                            self._record_action("follows")
-                            self.log(f"[Follow] Followed @{handle}.")
-                            last_follows.append(handle)
-                        except Exception:
-                            pass
-                    self.state["last_follows"] = last_follows
+                    await self._do_follows(post_pool)
 
                 elif action == "thread":
                     self.log("[Thread] Generating thread...")
@@ -808,6 +853,7 @@ class Orchestrator:
 
             resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5, use_following_tab=self._use_following())
             posts = resp.get("data", [])
+            posts = [p for p in posts if not _is_post_blocked(p)]
             if len(posts) < 3:
                 self.log("ERROR: Not enough posts.")
                 return False
@@ -925,6 +971,9 @@ class Orchestrator:
                     self.log("[Degen Comment] Skipped — content generation failed.")
                 if i < len(comment_posts) - 1:
                     await self._organic_pause(short=True)
+
+            # 4. DEGEN FOLLOWS
+            await self._do_follows(posts)
 
             self.state["degen_sequence_number"] = seq_num
             self.state["degen_last_format"] = format_key

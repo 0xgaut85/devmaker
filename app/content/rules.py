@@ -23,6 +23,16 @@ ANTI-SLOP (non-negotiable):
 - Allow incomplete thoughts. "Still not sure if this scales. But for our case it worked." is fine.
 - No corporate voice. Never use: "leverage", "utilize", "ensure", "stakeholders", "align".
 - No "here are 3 ways" unless you genuinely have 3 real points. Padding shows.
+
+ANTI-FABRICATION (critical):
+- NEVER claim you built, shipped, created, or launched something unless the voice description says you did.
+- NEVER say "I built", "I shipped", "last month I built", "we launched", "I created", "I made".
+- NEVER invent fake personal projects, apps, tools, or startups.
+- Instead of fake first-person stories, share OBSERVATIONS, OPINIONS, QUESTIONS, or REACTIONS.
+- Good: "Postgres handles this way better than people think." Bad: "I built a tool last week that..."
+- Good: "The real bottleneck in most apps is the ORM layer." Bad: "When I shipped my app..."
+- You can reference general experience ("I've seen this pattern", "In my experience") but NEVER invent specific projects.
+- Comment on the TOPIC, not on fake things you supposedly did.
 """.strip()
 
 BANNED_PHRASES = [
@@ -35,6 +45,22 @@ BANNED_PHRASES = [
     "this is so important",
     "underrated gem",
     "can't recommend enough",
+    "i built",
+    "i shipped",
+    "i created",
+    "i launched",
+    "i made a",
+    "i made an",
+    "we built",
+    "we shipped",
+    "we launched",
+    "we created",
+    "last month i",
+    "last week i",
+    "yesterday i built",
+    "i just built",
+    "i just shipped",
+    "i just launched",
 ]
 
 BANNED_OPENERS = [
@@ -64,17 +90,17 @@ BANNED_OPENERS = [
 
 FORMAT_CATALOG = {
     "A": {"name": "Short punch", "desc": "1-2 sentences, <80 chars. Punchy one-liner."},
-    "B": {"name": "Numbered list", "desc": "3 things I learned / noticed / shipped. Use \\n\\n between items."},
-    "C": {"name": "Paragraph story", "desc": "Mini-story ~200 chars with setup + payoff."},
+    "B": {"name": "Numbered list", "desc": "3 things worth knowing about this topic. Use \\n\\n between items."},
+    "C": {"name": "Observation", "desc": "A sharp observation about a trend or pattern. ~200 chars with setup + insight."},
     "D": {"name": "Question hook", "desc": "Start with a provocative question, then give your take."},
     "E": {"name": "Contrarian opener", "desc": "Hot take: [opinion]. Then back it up with specifics."},
-    "F": {"name": "Long thread-style", "desc": "400+ chars, 3-4 distinct paragraphs. Deep reflection."},
+    "F": {"name": "Long reflection", "desc": "400+ chars, 3-4 distinct paragraphs. Deep thinking about the topic."},
     "G": {"name": "Bullet list with intro", "desc": "Intro sentence, then bullet points with \\n\\n- format."},
     "H": {"name": "One-liner mic drop", "desc": "Single devastating sentence. That's it."},
-    "I": {"name": "Comparison / Why X over Y", "desc": "Used X for a while, switched to Y. Here's what changed."},
-    "J": {"name": "Mini tutorial / tip", "desc": "Quick tip if you're using [tool]: here's how..."},
-    "K": {"name": "Review / hot take on a tool", "desc": "Tried [tool] for 2 weeks. The good: ... The bad: ..."},
-    "L": {"name": "Storytelling", "desc": "First person experience. Last week I... Here's what happened."},
+    "I": {"name": "Comparison / X vs Y", "desc": "Compare two tools, approaches, or ideas. Why one wins over the other."},
+    "J": {"name": "Practical tip", "desc": "A useful tip about a tool or workflow. Quick and actionable."},
+    "K": {"name": "Hot take on a tool", "desc": "An opinion about a popular tool. What's overrated, underrated, or misunderstood."},
+    "L": {"name": "Industry pattern", "desc": "A pattern you've noticed in the industry. What's changing and why it matters."},
 }
 
 FORMAT_ORDER = list(FORMAT_CATALOG.keys())
@@ -181,7 +207,7 @@ POST_TYPES = {
     },
     "story": {
         "signals": ["last week", "yesterday", "just happened", "story time", "i was", "we were", "3 months ago", "learned the hard way"],
-        "strategy": "Relate to the story. Share a brief parallel experience or ask what happened next.",
+        "strategy": "Relate to the story. Ask a follow-up question or share a relevant observation. Do NOT invent your own story.",
     },
     "meme_joke": {
         "signals": ["lmao", "lol", "bruh", "no way", "ratio", "touch grass", "real ones know", "pov:", "me when"],
@@ -189,7 +215,7 @@ POST_TYPES = {
     },
     "educational": {
         "signals": ["thread", "here's how", "step 1", "tutorial", "guide", "til", "did you know", "pro tip", "how to"],
-        "strategy": "Add a practical tip the author missed. Or share your experience implementing it.",
+        "strategy": "Add a practical tip the author missed. Or mention a related tool or approach worth exploring.",
     },
     "milestone": {
         "signals": ["reached", "hit", "crossed", "milestone", "users", "revenue", "raised", "grew to", "from 0 to"],
@@ -208,13 +234,13 @@ def classify_post_type(text: str) -> tuple[str, str]:
     if scores:
         best = max(scores, key=scores.get)
         return best, POST_TYPES[best]["strategy"]
-    return "general", "Add a real opinion, new angle, or personal experience. Be specific."
+    return "general", "Add a real opinion, new angle, or concrete observation. Be specific."
 
 
 THREAD_FORMAT_CATALOG = {
     "T1": {"name": "Value thread", "desc": "3-5 tweets sharing practical knowledge. Hook tweet + value + CTA."},
     "T2": {"name": "Hot take thread", "desc": "3-4 tweets. Bold opening claim, supporting arguments, conclusion."},
-    "T3": {"name": "Story thread", "desc": "4-6 tweets. Personal story with setup, conflict, resolution, lesson."},
+    "T3": {"name": "Insight thread", "desc": "4-6 tweets. A trend or pattern explained. Setup, evidence, takeaway."},
 }
 
 THREAD_FORMAT_ORDER = list(THREAD_FORMAT_CATALOG.keys())

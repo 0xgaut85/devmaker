@@ -168,11 +168,14 @@ CRITICAL RULES:
 - NEVER use em dashes (— or –). Use commas or periods instead.
 - Use line breaks between sentences (each sentence on its own line with a blank line gap).
 - Include at least one SPECIFIC detail (a tool name, a number, a scenario, a concrete example).
+- NEVER claim you built, shipped, or launched anything. No fake personal projects.
+- Share opinions, observations, questions, or commentary. Not fabricated stories.
 """
     user = f"""Write an ORIGINAL standalone post inspired by the topic below.
 Do NOT react to it or reference it. Create your OWN take on the same topic.
-Add your own specific experience, observation, or opinion. Make it feel personal.
-The reader should think you wrote this from your own thoughts, not from reading someone else's post.
+Share an opinion, observation, or insight. Comment on the topic itself, not on something you supposedly did.
+Do NOT invent projects, apps, or tools you built. Do NOT say "I built", "I shipped", "last month I...".
+The reader should think you are sharing a genuine thought or opinion, not a fake personal story.
 
 Topic inspiration (do NOT quote or reference this directly):
 {original_tweet}
@@ -206,11 +209,12 @@ CRITICAL RULES:
 - Keep it 1-3 sentences. Smart, adds something new. Not generic praise.
 - Do NOT start with "honestly", "this is", "that's", "great point", or "so true".
 - NEVER use em dashes (— or –).
-- Add a SPECIFIC opinion, experience, or counterpoint. Include a concrete detail.
+- Add a SPECIFIC opinion or counterpoint. Include a concrete detail.
+- NEVER claim you built, shipped, or launched anything. No fake projects.
 - No vague reactions like "This hits different" or "Needed to hear this".{img_note}
 """
     user = f"""Write a smart quote comment that adds YOUR perspective to this tweet.
-Share a specific experience, add a concrete example, or offer a different angle.
+Add a concrete opinion, a useful observation, or a different angle. Do NOT invent things you built.
 Generic agreement or vague reactions are NOT acceptable.
 {"Consider the images — they may contain memes, screenshots, or charts that change the meaning." if has_images else ""}
 
@@ -257,14 +261,15 @@ CRITICAL RULES:
 - Output ONLY the comment text. No quotes, no labels.
 - Do NOT start with "honestly", "this is", "that's", "great point", "so true", "needed this".
 - NEVER use em dashes (— or –). Use commas or periods.
-- Add a SPECIFIC opinion, experience, or example. No generic reactions.
-- Include at least one concrete detail (a tool, a number, a personal story, a scenario).
+- Add a SPECIFIC opinion or example. No generic reactions.
+- Include at least one concrete detail (a tool name, a number, a scenario).
+- NEVER claim you built, shipped, or launched anything. No fake projects.
 - If the tone is "funny_witty", be actually funny with a specific reference, not forced.
 - If the tone is "contrarian", disagree with substance and a concrete reason.
 - Use line breaks between sentences for MEDIUM and LONG comments.{img_note}
 """
     user = f"""Write a {length_tier.lower()} reply to this tweet. Add something specific and valuable.
-Share a personal experience, a concrete example, or a real opinion with supporting detail.
+Share an opinion, a concrete observation, or a useful insight. Do NOT invent things you built or shipped.
 {"Consider the images — they may contain memes, screenshots, or charts." if has_images else ""}
 
 Tweet:
