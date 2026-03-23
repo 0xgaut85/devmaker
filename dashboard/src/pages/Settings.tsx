@@ -52,6 +52,8 @@ export default function Settings() {
           <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Scrape from "Following" instead of "For You". Better for fresh accounts with curated follows.</p>
           <Toggle label="Allow trading / price posts" value={config.allow_trading_price_posts ?? false} onChange={(v) => update("allow_trading_price_posts", v)} />
           <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">If off (default), skip RT/QRT/comments on obvious crypto price or chart posts. Turn on for CT-style accounts.</p>
+          <Toggle label="LLM: exclude politics / geopolitics" value={config.exclude_political_timeline ?? true} onChange={(v) => update("exclude_political_timeline", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">When on, the topic classifier will not assign categories to political or geopolitical posts (reduces algo doom-scroll). Off only if you intentionally engage in that space.</p>
         </Section>
 
         <Section title="LLM">
@@ -276,16 +278,18 @@ function TopicsPicker({ value, onChange, preset }: {
   preset: string[];
 }) {
   const [customTopic, setCustomTopic] = useState("");
+  const [showMore, setShowMore] = useState(false);
 
-  const allTopics = [...new Set([...preset, ...Object.keys(value)])];
+  const enabledTopics = Object.keys(value);
+  const availablePresets = preset.filter((t) => value[t] === undefined);
 
-  function toggle(topic: string) {
+  function addTopic(topic: string) {
+    onChange({ ...value, [topic]: 3 });
+  }
+
+  function removeTopic(topic: string) {
     const copy = { ...value };
-    if (copy[topic] !== undefined) {
-      delete copy[topic];
-    } else {
-      copy[topic] = 3;
-    }
+    delete copy[topic];
     onChange(copy);
   }
 
@@ -302,51 +306,70 @@ function TopicsPicker({ value, onChange, preset }: {
 
   return (
     <div>
+      {enabledTopics.length === 0 && (
+        <p className="text-xs text-neutral-500 mb-3">No topics selected. Add topics below.</p>
+      )}
+
       <div className="space-y-1.5 mb-4">
-        {allTopics.map((topic) => {
-          const enabled = value[topic] !== undefined;
-          return (
-            <div
-              key={topic}
-              className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-colors cursor-pointer ${
-                enabled
-                  ? "bg-neutral-800/80 border border-neutral-700"
-                  : "bg-neutral-900/40 border border-neutral-800/50 opacity-50"
-              }`}
-              onClick={() => !enabled && toggle(topic)}
-            >
-              <button
-                onClick={(e) => { e.stopPropagation(); toggle(topic); }}
-                className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
-                  enabled
-                    ? "bg-green-500 border-green-500 text-black"
-                    : "bg-transparent border-neutral-600 hover:border-neutral-400"
-                }`}
-              >
-                {enabled && <span className="text-[10px] font-bold leading-none">✓</span>}
-              </button>
-              <span className={`text-sm flex-1 truncate ${enabled ? "text-white" : "text-neutral-500"}`}>{topic}</span>
-              {enabled && (
-                <div className="flex items-center gap-1">
-                  {[1, 2, 3, 4, 5].map((n) => (
-                    <button
-                      key={n}
-                      onClick={(e) => { e.stopPropagation(); setWeight(topic, n); }}
-                      className={`w-5 h-5 rounded text-[10px] font-mono transition-colors ${
-                        n <= (value[topic] ?? 3)
-                          ? "bg-white text-black"
-                          : "bg-neutral-700 text-neutral-500 hover:bg-neutral-600"
-                      }`}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              )}
+        {enabledTopics.map((topic) => (
+          <div
+            key={topic}
+            className="flex items-center gap-2 rounded-lg px-3 py-1.5 bg-neutral-800/80 border border-neutral-700"
+          >
+            <span className="text-sm flex-1 truncate text-white">{topic}</span>
+            <div className="flex items-center gap-1">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setWeight(topic, n)}
+                  className={`w-5 h-5 rounded text-[10px] font-mono transition-colors ${
+                    n <= (value[topic] ?? 3)
+                      ? "bg-white text-black"
+                      : "bg-neutral-700 text-neutral-500 hover:bg-neutral-600"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
             </div>
-          );
-        })}
+            <button
+              onClick={() => removeTopic(topic)}
+              className="ml-1 w-5 h-5 rounded flex items-center justify-center text-neutral-500 hover:text-red-400 hover:bg-neutral-700 transition-colors shrink-0"
+              title="Remove topic"
+            >
+              <span className="text-sm leading-none">×</span>
+            </button>
+          </div>
+        ))}
       </div>
+
+      {availablePresets.length > 0 && (
+        <div className="mb-3">
+          <button
+            onClick={() => setShowMore(!showMore)}
+            className="text-xs text-neutral-400 hover:text-white transition-colors flex items-center gap-1"
+          >
+            <span className="text-[10px]">{showMore ? "▼" : "▶"}</span>
+            {showMore ? "Hide preset topics" : `Add from presets (${availablePresets.length})`}
+          </button>
+          {showMore && (
+            <div className="mt-2 space-y-1">
+              {availablePresets.map((topic) => (
+                <button
+                  key={topic}
+                  onClick={() => addTopic(topic)}
+                  className="w-full text-left flex items-center gap-2 rounded-lg px-3 py-1.5 bg-neutral-900/40 border border-neutral-800/50 opacity-60 hover:opacity-100 hover:border-neutral-600 transition-all"
+                >
+                  <span className="w-4 h-4 rounded border border-neutral-600 flex items-center justify-center shrink-0">
+                    <span className="text-[10px] text-neutral-500">+</span>
+                  </span>
+                  <span className="text-sm text-neutral-400">{topic}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center gap-2">
         <input

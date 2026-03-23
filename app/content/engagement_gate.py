@@ -1,8 +1,8 @@
 """
 Single place for timeline post eligibility (dev farming).
 
-Spam filter → trading policy → topic classification (LLM or keyword fallback).
-One gate, no duplicates in the action loop.
+Spam → trading policy (optional) → per-post category via LLM (or keyword fallback).
+Categories are chosen by the model from the user's enabled topic list, not heuristics.
 """
 
 from __future__ import annotations
@@ -62,13 +62,12 @@ def build_eligible_posts(
     min_topic_score: int = 1,
 ) -> list[dict[str, Any]]:
     """
-    Single gate: spam → trading policy → topic classification → eligible list.
+    Single gate: spam → trading policy → per-post LLM category (or keyword fallback).
 
-    When use_llm_classification is on (default): one LLM batch call decides
-    which posts match the user's enabled topics.  Keyword matching is the
-    fallback when LLM is off or the call fails.
+    With use_llm_classification (default), the LLM analyzes each candidate post and
+    assigns at most one enabled topic, or none. No separate political keyword layer.
     """
-    # --- fast pre-filters (no LLM needed) ---
+    # --- fast pre-filters (promo spam + optional trading CT; category = LLM) ---
     candidates: list[dict[str, Any]] = []
     for p in posts:
         if is_spam_post(p):

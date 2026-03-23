@@ -31,6 +31,7 @@ EXPOSED_FIELDS = [
     "personality_controversy", "personality_intellect", "personality_brevity", "personality_edginess",
     "use_following_tab",
     "allow_trading_price_posts",
+    "exclude_political_timeline",
     "action_delay_seconds", "sequence_delay_minutes", "min_engagement_likes",
 ]
 

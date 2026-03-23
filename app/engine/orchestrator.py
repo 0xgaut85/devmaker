@@ -429,8 +429,8 @@ class Orchestrator:
     async def _run_dev_sequence(self) -> bool:
         self._cancelled = False
         enabled = self._enabled_topics()
-        if len(enabled) < 3:
-            self.log("ERROR: Need at least 3 enabled topics.")
+        if not enabled:
+            self.log("ERROR: Enable at least 1 topic in Settings.")
             return False
         if not self._active_api_key():
             self.log("ERROR: No API key configured.")
@@ -523,8 +523,19 @@ class Orchestrator:
                     if not available:
                         self.log(f"[{action.upper()}] Skipped — no unused posts left.")
                         continue
-                    # Pool is already gated (topic + spam + trading policy)
-                    post = available[0]
+                    # Comments and QRTs only use posts whose classified topic is in the enabled set
+                    if action in ("comment", "qrt"):
+                        enabled_set = set(enabled)
+                        in_topic = [p for p in available if p.get("_topic") in enabled_set]
+                        if not in_topic:
+                            self.log(
+                                f"[{action.upper()}] Skipped — no unused post matching your "
+                                f"enabled topic{'s' if len(enabled) > 1 else ''}."
+                            )
+                            continue
+                        post = in_topic[0]
+                    else:
+                        post = available[0]
 
                 if action == "tweet":
                     tweet_topic = self._next_topic(enabled)

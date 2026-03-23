@@ -37,7 +37,14 @@ def _active_model(cfg: dict) -> str:
     return cfg.get("openai_model", "gpt-4o")
 
 
-def _call_llm(cfg: dict, system: str, user: str, *, temperature: float = 0.9) -> str:
+def _call_llm(
+    cfg: dict,
+    system: str,
+    user: str,
+    *,
+    temperature: float = 0.9,
+    max_tokens: int = 1024,
+) -> str:
     """Call the configured LLM provider and return raw text.
     cfg is a dict with llm_provider, openai_api_key, anthropic_api_key, etc."""
     if cfg.get("llm_provider") == "anthropic":
@@ -45,7 +52,7 @@ def _call_llm(cfg: dict, system: str, user: str, *, temperature: float = 0.9) ->
         client = anthropic.Anthropic(api_key=cfg.get("anthropic_api_key", ""))
         response = client.messages.create(
             model=_active_model(cfg),
-            max_tokens=1024,
+            max_tokens=max_tokens,
             temperature=temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
@@ -60,7 +67,7 @@ def _call_llm(cfg: dict, system: str, user: str, *, temperature: float = 0.9) ->
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            max_tokens=1024,
+            max_tokens=max_tokens,
             temperature=temperature,
         )
         return response.choices[0].message.content
@@ -370,46 +377,88 @@ def classify_post_with_llm(cfg: dict, post_text: str) -> dict | None:
     return None
 
 
+def _match_enabled_topic_label(raw: object, enabled_topics: list[str]) -> str | None:
+    """Map LLM output to an exact enabled topic label (handles minor spelling / spacing drift)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s or s.lower() in ("null", "none", "n/a", "-", "omit", "skip"):
+        return None
+    if s in enabled_topics:
+        return s
+    s_lower = s.lower()
+    for t in enabled_topics:
+        if t.lower() == s_lower:
+            return t
+    for t in enabled_topics:
+        tl = t.lower()
+        if tl in s_lower or s_lower in tl:
+            return t
+    return None
+
+
 def batch_classify_topics(
     cfg: dict,
     posts: list[dict],
     enabled_topics: list[str],
 ) -> dict[str, str]:
-    """Classify multiple posts against enabled topics in one LLM call.
+    """Analyze each post and assign at most one category from enabled topics (one LLM call).
 
-    Returns {post_url: best_matching_topic} for posts that match.
-    Posts that don't match any enabled topic are omitted from the result.
+    Returns {post_url: exact_topic_label} only for posts the model assigns to a category.
+    Politics, geopolitics, off-topic, etc. → omitted (no key).
     """
     if not _active_api_key(cfg) or not posts or not enabled_topics:
         return {}
 
-    topics_str = ", ".join(enabled_topics)
+    topics_lines = "\n".join(f"- {t}" for t in enabled_topics)
     numbered = []
     url_index: dict[int, str] = {}
     for i, p in enumerate(posts, 1):
-        text = (p.get("text") or "")[:280]
+        text = (p.get("text") or "")[:400]
         url_index[i] = p.get("url", "")
         numbered.append(f"{i}. {text}")
     tweets_block = "\n".join(numbered)
 
-    system = (
-        "You classify tweets by topic relevance. "
-        "The user ONLY cares about these topics:\n"
-        f"{topics_str}\n\n"
-        "Rules:\n"
-        "- Return ONLY a JSON object mapping tweet number (as string) to the BEST matching topic from the list above.\n"
-        "- Only include tweets that GENUINELY relate to one of the topics. Be generous but honest.\n"
-        "- A tweet about coding, building software, debugging, deploying, etc. matches tech topics.\n"
-        "- Skip tweets about politics, foreign affairs, crypto price action, sports, celebrity gossip, "
-        "or anything clearly outside the user's topic list.\n"
-        "- If a tweet is borderline or could loosely fit, include it.\n"
-        "- Do NOT include any text outside the JSON. No markdown, no explanation.\n"
-        '- Example: {"1": "AI / ML tools", "3": "Frontend / UI / UX", "7": "Startup / founder life"}'
+    political_rule = ""
+    if cfg.get("exclude_political_timeline", True):
+        political_rule = (
+            "\n- Do NOT assign any topic to domestic or foreign politics, elections, wars, "
+            "geopolitics, or breaking news about governments — omit those tweet numbers.\n"
+        )
+
+    narrow_rule = (
+        "\n- These are the ONLY categories this user cares about. "
+        "Only assign a label when the tweet genuinely fits one of them. "
+        "If unsure or only a weak match, use null.\n"
     )
-    user = f"Classify these tweets:\n\n{tweets_block}"
+
+    system = (
+        "You analyze X/Twitter posts one by one. For EACH numbered tweet, decide which SINGLE "
+        "category from the user's list best describes it, or that it fits NONE of them.\n\n"
+        "The ONLY valid category strings are exactly these (copy labels verbatim when assigning):\n"
+        f"{topics_lines}\n"
+        f"{political_rule}"
+        f"{narrow_rule}"
+        "- Assign tech/software/building/product/engineering content to the closest matching category.\n"
+        "- Skip crypto price / chart / trading tweets unless the user list clearly includes that domain.\n"
+        "- Skip sports, celebrity gossip, and posts with no real connection to any listed category.\n"
+        "Output rules:\n"
+        "- Return ONLY a JSON object. Keys are tweet numbers as strings (\"1\", \"2\", ...).\n"
+        "- Values are either the EXACT category string from the list above, or JSON null if the tweet fits none.\n"
+        "- Do not invent new category names. Do not add keys for tweets you did not evaluate.\n"
+        "- No markdown fences, no commentary.\n"
+        'Example: {"1": "AI / ML tools", "2": null, "3": "Frontend / UI / UX"}'
+    )
+    user = f"Analyze and categorize each tweet:\n\n{tweets_block}"
+
+    # Enough room for ~30 short labels + nulls
+    n_posts = len(posts)
+    max_out = min(4096, 256 + n_posts * 80)
 
     try:
-        raw = _call_llm(cfg, system, user, temperature=0.2)
+        raw = _call_llm(cfg, system, user, temperature=0.15, max_tokens=max_out)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -417,10 +466,14 @@ def batch_classify_topics(
                 raw = raw[4:]
         mapping = json.loads(raw)
         result: dict[str, str] = {}
-        for idx_str, topic in mapping.items():
-            idx = int(idx_str)
+        for idx_str, topic_raw in mapping.items():
+            try:
+                idx = int(idx_str)
+            except (TypeError, ValueError):
+                continue
             url = url_index.get(idx, "")
-            if url and topic in enabled_topics:
+            topic = _match_enabled_topic_label(topic_raw, enabled_topics)
+            if url and topic:
                 result[url] = topic
         return result
     except (json.JSONDecodeError, KeyError, ValueError, IndexError) as exc:
