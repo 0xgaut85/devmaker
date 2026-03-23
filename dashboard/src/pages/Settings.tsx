@@ -72,7 +72,7 @@ export default function Settings() {
         </Section>
 
         <Section title="Topics">
-          <p className="text-xs text-neutral-500 mb-3">Toggle topics on and set weight (1-5). Higher weight = more frequent content.</p>
+          <p className="text-xs text-neutral-500 mb-3">Add topics and set weight (1-5). Only posts matching these topics will be used. Click the red × to remove.</p>
           <TopicsPicker value={config.topics || {}} onChange={(v) => update("topics", v)} preset={TOPICS_GENERAL} />
         </Section>
 
@@ -334,10 +334,10 @@ function TopicsPicker({ value, onChange, preset }: {
             </div>
             <button
               onClick={() => removeTopic(topic)}
-              className="ml-1 w-5 h-5 rounded flex items-center justify-center text-neutral-500 hover:text-red-400 hover:bg-neutral-700 transition-colors shrink-0"
+              className="ml-2 px-2 py-0.5 rounded text-xs text-red-400 border border-red-400/30 hover:bg-red-400/20 hover:border-red-400/60 transition-colors shrink-0"
               title="Remove topic"
             >
-              <span className="text-sm leading-none">×</span>
+              ×
             </button>
           </div>
         ))}
