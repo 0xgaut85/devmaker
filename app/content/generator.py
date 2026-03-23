@@ -435,23 +435,25 @@ def batch_classify_topics(
     )
 
     system = (
-        "You analyze X/Twitter posts one by one. For EACH numbered tweet, decide which SINGLE "
-        "category from the user's list best describes it, or that it fits NONE of them.\n\n"
-        "The ONLY valid category strings are exactly these (copy labels verbatim when assigning):\n"
+        "You categorize X/Twitter posts. For EACH numbered tweet:\n"
+        "1. First decide what the tweet is REALLY about (politics, crypto prices, sports, tech, AI, startups, etc.).\n"
+        "2. Then check: does that real category match one of the user's enabled topics below?\n"
+        "3. If yes → output the EXACT matching topic string. If no → output null.\n\n"
+        "DO NOT force-fit. A tweet about elections is politics even if the user has 'AI / ML tools' enabled. "
+        "A tweet about Bitcoin price is crypto trading, not 'Startup / founder life'. "
+        "Only match when the tweet genuinely belongs to the topic.\n\n"
+        "The user's enabled topics (use these strings verbatim when matching):\n"
         f"{topics_lines}\n"
         f"{political_rule}"
         f"{narrow_rule}"
-        "- Assign tech/software/building/product/engineering content to the closest matching category.\n"
-        "- Skip crypto price / chart / trading tweets unless the user list clearly includes that domain.\n"
-        "- Skip sports, celebrity gossip, and posts with no real connection to any listed category.\n"
         "Output rules:\n"
         "- Return ONLY a JSON object. Keys are tweet numbers as strings (\"1\", \"2\", ...).\n"
-        "- Values are either the EXACT category string from the list above, or JSON null if the tweet fits none.\n"
-        "- Do not invent new category names. Do not add keys for tweets you did not evaluate.\n"
+        "- Values are either the EXACT topic string from the list above, or null.\n"
+        "- Do not invent new category names.\n"
         "- No markdown fences, no commentary.\n"
-        'Example: {"1": "AI / ML tools", "2": null, "3": "Frontend / UI / UX"}'
+        'Example: {"1": "AI / ML tools", "2": null, "3": null, "4": "Frontend / UI / UX"}'
     )
-    user = f"Analyze and categorize each tweet:\n\n{tweets_block}"
+    user = f"Categorize each tweet:\n\n{tweets_block}"
 
     # Enough room for ~30 short labels + nulls
     n_posts = len(posts)
