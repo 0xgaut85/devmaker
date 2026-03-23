@@ -115,6 +115,7 @@ class Config(Base):
 
     # Timeline
     use_following_tab = Column(Boolean, default=True)
+    allow_trading_price_posts = Column(Boolean, default=False)
 
     # Timing
     action_delay_seconds = Column(Integer, default=3)

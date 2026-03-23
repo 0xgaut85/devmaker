@@ -89,10 +89,15 @@ def validate_and_fix(text: str, length_tier: str | None = None) -> ValidationRes
         if len(sentences) > 2 and "\n" not in text:
             text = "\n\n".join(sentences)
 
+    _LENGTH_SLACK = 40
     if length_tier and length_tier in LENGTH_TIERS:
         tier = LENGTH_TIERS[length_tier]
         char_count = len(text)
-        if length_tier == "SHORT" and char_count > tier["max"] * 2:
-            return ValidationResult(text, False, f"Too long for SHORT: {char_count} chars")
+        max_allowed = tier["max"] + _LENGTH_SLACK
+        if char_count > max_allowed:
+            return ValidationResult(
+                text, False,
+                f"Too long for {length_tier}: {char_count} chars (max ~{max_allowed})",
+            )
 
     return ValidationResult(text, True)

@@ -2,12 +2,25 @@
 
 from app.content.rules import (
     GRAMMAR_RULES,
+    REPLY_GRAMMAR_RULES,
     ANTI_SLOP_RULES,
     FORMAT_CATALOG,
     DEGEN_FORMAT_CATALOG,
     LENGTH_TIERS,
     THREAD_FORMAT_CATALOG,
 )
+
+
+def _reply_length_caps(length_tier: str) -> str:
+    tier = LENGTH_TIERS.get(length_tier, LENGTH_TIERS["MEDIUM"])
+    mx = tier["max"]
+    if length_tier == "SHORT":
+        return f"Hard cap ~{mx} characters. Exactly 1-2 sentences. No mini-paragraphs."
+    if length_tier == "MEDIUM":
+        return f"Hard cap ~{mx} characters. At most 3 sentences. Stop before you hit essay length."
+    if length_tier == "LONG":
+        return f"Hard cap ~{mx} characters. At most 4 short sentences. Still a reply, not a blog post."
+    return f"Stay within ~{mx} characters."
 
 
 def _voice_block(voice: str) -> str:
@@ -248,13 +261,14 @@ def build_reply_comment_prompt(
 VOICE — write exactly like this person:
 {_voice_block(voice)}
 
-{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{_tone_awareness_block()}{GRAMMAR_RULES}
+{_personality_block(cfg)}{_topics_block(enabled_topics or [])}{_tone_awareness_block()}{REPLY_GRAMMAR_RULES}
 
 {ANTI_SLOP_RULES}
 
 {_examples_block(bad_examples, good_examples)}
 {_recent_posts_block(recent_posts)}{post_type_block}{_existing_replies_block(existing_replies)}{_positions_block(positions)}
 LENGTH: {length_tier} ({tier['desc']}) — target {tier['min']}-{tier['max']} characters.
+{_reply_length_caps(length_tier)}
 TONE: {tone.replace('_', ' ')}
 
 CRITICAL RULES:
@@ -266,9 +280,10 @@ CRITICAL RULES:
 - NEVER claim you built, shipped, or launched anything. No fake projects.
 - If the tone is "funny_witty", be actually funny with a specific reference, not forced.
 - If the tone is "contrarian", disagree with substance and a concrete reason.
-- Use line breaks between sentences for MEDIUM and LONG comments.{img_note}
+- Do NOT pad length. Shorter is better if the point is clear.{img_note}
 """
     user = f"""Write a {length_tier.lower()} reply to this tweet. Add something specific and valuable.
+{_reply_length_caps(length_tier)}
 Share an opinion, a concrete observation, or a useful insight. Do NOT invent things you built or shipped.
 {"Consider the images — they may contain memes, screenshots, or charts." if has_images else ""}
 

@@ -22,80 +22,9 @@ from app.content.rules import (
     DEGEN_TOPIC_KEYWORDS, COMMENT_ROTATIONS, TONE_LIST,
     THREAD_FORMAT_ORDER, classify_post_type,
 )
+from app.content.topics import TOPIC_KEYWORDS, classify_topic
+from app.content.engagement_gate import build_eligible_posts, is_spam_post
 from app.ws.manager import manager
-
-
-TOPIC_KEYWORDS = {
-    "Database / backend": ["postgres", "sql", "database", "redis", "backend", "migration", "orm", "prisma", "supabase", "mongodb"],
-    "Frontend / UI / UX": ["frontend", "react", "css", "tailwind", "ui", "ux", "design system", "component", "nextjs", "next.js", "svelte", "vue"],
-    "DevOps / infra": ["deploy", "ci/cd", "docker", "kubernetes", "k8s", "terraform", "aws", "gcp", "azure", "infra", "monitoring"],
-    "AI / ML tools": ["gpt", "claude", "llm", "openai", "copilot", "cursor", "ai coding", "model", "fine-tun", "benchmark"],
-    "Open source": ["open source", "open-source", "oss", "github", "contributor", "maintainer", "license", "fork"],
-    "Startup / founder life": ["startup", "founder", "fundrais", "pivot", "pmf", "product-market", "launch", "yc", "investor", "seed", "series"],
-    "Career / growth": ["hiring", "interview", "promotion", "resume", "career", "mentor", "salary", "job"],
-    "Developer tools / productivity": ["ide", "vscode", "terminal", "cli", "neovim", "vim", "workflow", "dev tools", "productivity"],
-    "Product thinking": ["feature", "roadmap", "user research", "ship", "prioriti", "product"],
-    "Hardware / gadgets": ["hardware", "gadget", "device", "peripheral", "monitor", "keyboard", "mouse", "home office"],
-    "Remote work / async": ["remote", "async", "timezone", "wfh", "hybrid", "distributed"],
-    "Side projects": ["side project", "build in public", "indie", "solo", "weekend project", "burnout", "scope creep"],
-    "Security / privacy": ["security", "auth", "encrypt", "vulnerability", "pentest", "oauth", "jwt", "password"],
-    "Technical debt / refactoring": ["tech debt", "refactor", "legacy", "rewrite", "code quality", "migration"],
-    "Pricing / monetization": ["pricing", "monetiz", "freemium", "subscription", "revenue", "mrr", "arr", "billing"],
-    "API design": ["api", "rest", "graphql", "trpc", "endpoint", "webhook", "versioning"],
-    "Mobile / cross-platform": ["mobile", "react native", "flutter", "ios", "android", "pwa", "swift", "kotlin"],
-    "Data / analytics": ["analytics", "metrics", "dashboard", "data pipeline", "observability", "datadog"],
-    "Community / content creation": ["newsletter", "blog", "content", "audience", "writing", "creator", "youtube", "podcast"],
-    "Entrepreneurship": ["entrepreneur", "bootstrap", "indie hacker", "saas", "acquisition", "exit", "business model"],
-    "Economics": ["macroeconomics", "microeconomics", "gdp growth", "inflation rate", "interest rate", "monetary policy", "fiscal policy", "supply chain economics"],
-    "AI / future of AI": ["agi", "artificial intelligence", "automation", "future of ai", "singularity", "superintelligence"],
-    "Philosophy of tech": ["ethics", "digital minimalism", "philosophy", "agi risk", "alignment"],
-    "AI agents": ["ai agent", "tool use", "multi-agent", "autonomous agent", "agentic", "crew", "langchain", "langgraph"],
-    "Robotics / physical tech": ["robot", "drone", "embodied", "humanoid", "physical ai", "manufacturing"],
-    "Current events / news": ["just launched", "just shipped", "now available", "new release", "open sourced"],
-    "Culture / memes / takes": ["meme", "hot take", "viral tweet", "discourse", "ratio"],
-}
-
-_POST_BLOCKLIST = [
-    # US politics
-    "vote", "voting", "election", "candidate", "democrat", "republican", "trump",
-    "biden", "kamala", "governor", "senator", "congress", "political", "ballot",
-    "campaign trail", "maga", "liberal", "conservative", "white house",
-    "supreme court", "gop", "dnc", "rnc", "impeach",
-    # International politics
-    "modi", "bjp", "parliament", "lok sabha", "rajya sabha", "delhi",
-    "mumbai police", "hindutva", "caste", "communal",
-    "brexit", "tory", "labour party", "starmer", "sunak",
-    "macron", "eu commission", "bundestag", "putin", "zelensky", "nato",
-    "genocide", "apartheid", "refugee crisis", "sanctions",
-    "minister", "ministry", "legislation", "prime minister",
-    # Generic politics / news noise
-    "breaking news", "just in:", "developing:", "war on", "protest",
-    "arrested", "sentenced", "indicted", "scandal", "corruption",
-    # Spam / promo
-    "launching soon", "pre-order", "use code", "discount code", "promo code",
-    "giveaway", "giving away", "drop your wallet", "airdrop claim",
-    "link in bio", "sign up now", "limited time", "act fast", "don't miss",
-    "sponsored", "ad ", "#ad ", "partnership with", "collab with",
-    "onlyfans", "subscribe to my", "join my telegram",
-    "retweet to win", "follow and rt", "like and retweet", "tag a friend",
-]
-
-
-def _is_post_blocked(post: dict) -> bool:
-    text = post.get("text", "").lower()
-    return any(blocked in text for blocked in _POST_BLOCKLIST)
-
-
-def _is_rt_worthy(post: dict, enabled_topics: list[str]) -> bool:
-    """Check if a post is worth retweeting — on-topic and not junk/promo/political."""
-    if _is_post_blocked(post):
-        return False
-    topic = post.get("_topic", "")
-    if topic and topic in enabled_topics:
-        return True
-    if post.get("likes", 0) > 500:
-        return True
-    return False
 
 
 _IMAGE_STOPWORDS = frozenset({
@@ -129,22 +58,6 @@ def _images_relevant(source_text: str, generated_text: str) -> bool:
         return False
     overlap = len(source_words & gen_words) / len(source_words)
     return overlap >= 0.15
-
-
-def classify_topic(text: str, enabled_topics: list[str], keyword_map: dict | None = None) -> str:
-    if keyword_map is None:
-        keyword_map = TOPIC_KEYWORDS
-    text_lower = text.lower()
-    scores = {}
-    for topic, keywords in keyword_map.items():
-        if topic not in enabled_topics:
-            continue
-        score = sum(1 for kw in keywords if kw in text_lower)
-        if score > 0:
-            scores[topic] = score
-    if scores:
-        return max(scores, key=scores.get)
-    return ""
 
 
 class Orchestrator:
@@ -545,32 +458,34 @@ class Orchestrator:
                 resp = await self._cmd("scrape_timeline", min_likes=20, max_posts=30, scroll_count=3, use_following_tab=following)
                 posts = resp.get("data", [])
 
-            for p in posts:
-                p["_topic"] = classify_topic(p.get("text", ""), enabled)
+            eligible = build_eligible_posts(posts, enabled, self.cfg, min_topic_score=1)
+            if len(eligible) < 3:
+                self.log("Dev: need more eligible posts — second scrape with lower bar...")
+                resp2 = await self._cmd(
+                    "scrape_timeline",
+                    min_likes=10, max_posts=40, scroll_count=6, use_following_tab=following,
+                )
+                extra = resp2.get("data", [])
+                seen = {p.get("url") for p in eligible}
+                for p in build_eligible_posts(extra, enabled, self.cfg, min_topic_score=1):
+                    u = p.get("url")
+                    if u and u not in seen:
+                        eligible.append(p)
+                        seen.add(u)
 
-            posts = [p for p in posts if not _is_post_blocked(p)]
-            self.log(f"After blocklist filter: {len(posts)} posts.")
-
-            on_topic = [p for p in posts if p["_topic"] in enabled]
-            if len(on_topic) >= 3:
-                posts = on_topic
-                self.log(f"Filtered to {len(posts)} on-topic posts.")
-            else:
-                self.log(f"Only {len(on_topic)} on-topic posts, using all {len(posts)} posts (LLM will adapt).")
-
-            if len(posts) < 3:
-                self.log("ERROR: Not enough posts.")
+            if len(eligible) < 3:
+                self.log(
+                    "ERROR: Not enough posts matching your topics (need at least 3 eligible posts). "
+                    "Broaden topics, use Following tab, or enable allow_trading_price_posts for CT-style posts."
+                )
                 return False
 
             if self._cancelled:
                 return False
 
-            # Build action plan — on-topic posts first, then off-topic (shuffled within each group)
-            on_topic_pool = [p for p in posts if p.get("_topic") in enabled]
-            off_topic_pool = [p for p in posts if p.get("_topic") not in enabled]
-            random.shuffle(on_topic_pool)
-            random.shuffle(off_topic_pool)
-            post_pool = on_topic_pool + off_topic_pool
+            self.log(f"Engagement pool: {len(eligible)} posts (topic gate + spam + trading policy).")
+            random.shuffle(eligible)
+            post_pool = eligible
             used_urls = set(self.state.get("recent_source_urls", []))
 
             actions = []
@@ -604,6 +519,7 @@ class Orchestrator:
                     if not available:
                         self.log(f"[{action.upper()}] Skipped — no unused posts left.")
                         continue
+                    # Pool is already gated (topic + spam + trading policy)
                     post = available[0]
 
                 if action == "tweet":
@@ -635,11 +551,6 @@ class Orchestrator:
                         self.log("[Tweet] Skipped — content generation failed.")
 
                 elif action == "qrt":
-                    qrt_candidates = [p for p in available if _is_rt_worthy(p, enabled)]
-                    if not qrt_candidates:
-                        self.log("[QRT] Skipped — no quality post to quote.")
-                        continue
-                    post = qrt_candidates[0]
                     used_urls.add(post.get("url", ""))
                     self.log(f"[QRT] Quoting @{post.get('handle')}")
                     await self._like_and_bookmark(post["url"])
@@ -665,11 +576,6 @@ class Orchestrator:
                         self.log("[QRT] Skipped — content generation failed.")
 
                 elif action == "rt":
-                    rt_candidates = [p for p in available if _is_rt_worthy(p, enabled)]
-                    if not rt_candidates:
-                        self.log("[RT] Skipped — no quality post to retweet.")
-                        continue
-                    post = rt_candidates[0]
                     used_urls.add(post.get("url", ""))
                     self.log(f"[RT] Reposting @{post.get('handle')}")
                     try:
@@ -853,7 +759,7 @@ class Orchestrator:
 
             resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5, use_following_tab=self._use_following())
             posts = resp.get("data", [])
-            posts = [p for p in posts if not _is_post_blocked(p)]
+            posts = [p for p in posts if not is_spam_post(p)]
             if len(posts) < 3:
                 self.log("ERROR: Not enough posts.")
                 return False

@@ -10,6 +10,14 @@ GRAMMAR (non-negotiable):
 - Connect related ideas with commas or new sentences. No "sentence. lowercase sentence." pattern.
 """.strip()
 
+REPLY_GRAMMAR_RULES = """
+REPLY FORMATTING (replies only — keep compact):
+- Start sentences with capitals. NEVER use em dashes (— or –).
+- SHORT: one paragraph, at most 2 sentences, no blank lines between sentences.
+- MEDIUM: at most 3 sentences; single paragraph or one line break if truly needed.
+- LONG: at most 4 short sentences; do not write an essay or multiple blank-line paragraphs.
+"""
+
 ANTI_SLOP_RULES = """
 ANTI-SLOP (non-negotiable):
 - No generic agreement ("This is so true", "Great point about X").
@@ -174,12 +182,13 @@ LENGTH_TIERS = {
 }
 
 COMMENT_ROTATIONS = [
-    ["SHORT", "MEDIUM", "LONG", "MEDIUM", "SHORT"],
-    ["MEDIUM", "LONG", "SHORT", "LONG", "MEDIUM"],
-    ["LONG", "SHORT", "MEDIUM", "SHORT", "LONG"],
-    ["SHORT", "LONG", "MEDIUM", "LONG", "SHORT"],
-    ["MEDIUM", "SHORT", "LONG", "SHORT", "MEDIUM"],
-    ["LONG", "MEDIUM", "SHORT", "MEDIUM", "LONG"],
+    ["SHORT", "SHORT", "MEDIUM", "SHORT", "MEDIUM"],
+    ["SHORT", "MEDIUM", "SHORT", "SHORT", "MEDIUM"],
+    ["MEDIUM", "SHORT", "SHORT", "MEDIUM", "SHORT"],
+    ["SHORT", "SHORT", "SHORT", "MEDIUM", "MEDIUM"],
+    ["SHORT", "MEDIUM", "MEDIUM", "SHORT", "SHORT"],
+    ["MEDIUM", "SHORT", "SHORT", "SHORT", "LONG"],
+    ["SHORT", "SHORT", "MEDIUM", "LONG", "SHORT"],
 ]
 
 TONE_TARGETS = {

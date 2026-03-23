@@ -30,6 +30,7 @@ EXPOSED_FIELDS = [
     "personality_humor", "personality_sarcasm", "personality_confidence", "personality_warmth",
     "personality_controversy", "personality_intellect", "personality_brevity", "personality_edginess",
     "use_following_tab",
+    "allow_trading_price_posts",
     "action_delay_seconds", "sequence_delay_minutes", "min_engagement_likes",
 ]
 
