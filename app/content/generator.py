@@ -37,7 +37,7 @@ def _active_model(cfg: dict) -> str:
     return cfg.get("openai_model", "gpt-4o")
 
 
-def _call_llm(cfg: dict, system: str, user: str) -> str:
+def _call_llm(cfg: dict, system: str, user: str, *, temperature: float = 0.9) -> str:
     """Call the configured LLM provider and return raw text.
     cfg is a dict with llm_provider, openai_api_key, anthropic_api_key, etc."""
     if cfg.get("llm_provider") == "anthropic":
@@ -46,6 +46,7 @@ def _call_llm(cfg: dict, system: str, user: str) -> str:
         response = client.messages.create(
             model=_active_model(cfg),
             max_tokens=1024,
+            temperature=temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -60,7 +61,7 @@ def _call_llm(cfg: dict, system: str, user: str) -> str:
                 {"role": "user", "content": user},
             ],
             max_tokens=1024,
-            temperature=0.9,
+            temperature=temperature,
         )
         return response.choices[0].message.content
 
@@ -367,6 +368,64 @@ def classify_post_with_llm(cfg: dict, post_text: str) -> dict | None:
     except (json.JSONDecodeError, KeyError, IndexError):
         pass
     return None
+
+
+def batch_classify_topics(
+    cfg: dict,
+    posts: list[dict],
+    enabled_topics: list[str],
+) -> dict[str, str]:
+    """Classify multiple posts against enabled topics in one LLM call.
+
+    Returns {post_url: best_matching_topic} for posts that match.
+    Posts that don't match any enabled topic are omitted from the result.
+    """
+    if not _active_api_key(cfg) or not posts or not enabled_topics:
+        return {}
+
+    topics_str = ", ".join(enabled_topics)
+    numbered = []
+    url_index: dict[int, str] = {}
+    for i, p in enumerate(posts, 1):
+        text = (p.get("text") or "")[:280]
+        url_index[i] = p.get("url", "")
+        numbered.append(f"{i}. {text}")
+    tweets_block = "\n".join(numbered)
+
+    system = (
+        "You classify tweets by topic relevance. "
+        "The user ONLY cares about these topics:\n"
+        f"{topics_str}\n\n"
+        "Rules:\n"
+        "- Return ONLY a JSON object mapping tweet number (as string) to the BEST matching topic from the list above.\n"
+        "- Only include tweets that GENUINELY relate to one of the topics. Be generous but honest.\n"
+        "- A tweet about coding, building software, debugging, deploying, etc. matches tech topics.\n"
+        "- Skip tweets about politics, foreign affairs, crypto price action, sports, celebrity gossip, "
+        "or anything clearly outside the user's topic list.\n"
+        "- If a tweet is borderline or could loosely fit, include it.\n"
+        "- Do NOT include any text outside the JSON. No markdown, no explanation.\n"
+        '- Example: {"1": "AI / ML tools", "3": "Frontend / UI / UX", "7": "Startup / founder life"}'
+    )
+    user = f"Classify these tweets:\n\n{tweets_block}"
+
+    try:
+        raw = _call_llm(cfg, system, user, temperature=0.2)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        mapping = json.loads(raw)
+        result: dict[str, str] = {}
+        for idx_str, topic in mapping.items():
+            idx = int(idx_str)
+            url = url_index.get(idx, "")
+            if url and topic in enabled_topics:
+                result[url] = topic
+        return result
+    except (json.JSONDecodeError, KeyError, ValueError, IndexError) as exc:
+        logger.warning("[batch_classify_topics] LLM response parse failed: %s", exc)
+        return {}
 
 
 def extract_position(cfg: dict, posted_text: str) -> dict | None:

@@ -1,16 +1,19 @@
 """
 Single place for timeline post eligibility (dev farming).
 
-Topic match + minimal spam + optional trading exclusion — not duplicated in the action loop.
+Spam filter → trading policy → topic classification (LLM or keyword fallback).
+One gate, no duplicates in the action loop.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.content.topics import TOPIC_KEYWORDS, classify_topic_scored
 
-# Obvious promo / scam — not politics keyword lists
+logger = logging.getLogger(__name__)
+
 SPAM_SUBSTRINGS = [
     "launching soon", "pre-order", "use code", "discount code", "promo code",
     "giveaway", "giving away", "drop your wallet", "airdrop claim",
@@ -59,17 +62,56 @@ def build_eligible_posts(
     min_topic_score: int = 1,
 ) -> list[dict[str, Any]]:
     """
-    Filter scraped posts once: spam, topic match score, trading policy.
-    Each returned dict is a shallow copy with _topic and _topic_score set.
+    Single gate: spam → trading policy → topic classification → eligible list.
+
+    When use_llm_classification is on (default): one LLM batch call decides
+    which posts match the user's enabled topics.  Keyword matching is the
+    fallback when LLM is off or the call fails.
     """
-    km = keyword_map or TOPIC_KEYWORDS
-    out: list[dict[str, Any]] = []
+    # --- fast pre-filters (no LLM needed) ---
+    candidates: list[dict[str, Any]] = []
     for p in posts:
         if is_spam_post(p):
             continue
         text = p.get("text") or ""
         if should_exclude_trading_price(text, cfg):
             continue
+        candidates.append(p)
+
+    if not candidates:
+        return []
+
+    # --- topic classification ---
+    use_llm = cfg.get("use_llm_classification", True)
+    llm_result: dict[str, str] | None = None
+
+    if use_llm:
+        try:
+            from app.content.generator import batch_classify_topics
+            llm_result = batch_classify_topics(cfg, candidates, enabled)
+        except Exception as exc:
+            logger.warning("[engagement_gate] LLM batch classify failed, falling back to keywords: %s", exc)
+            llm_result = None
+
+    if llm_result is not None and use_llm:
+        logger.info("[engagement_gate] LLM classified %d/%d posts as on-topic", len(llm_result), len(candidates))
+        out: list[dict[str, Any]] = []
+        for p in candidates:
+            url = p.get("url", "")
+            topic = llm_result.get(url)
+            if topic:
+                row = dict(p)
+                row["_topic"] = topic
+                row["_topic_score"] = 1
+                out.append(row)
+        return out
+
+    # --- keyword fallback ---
+    logger.info("[engagement_gate] Using keyword classification (LLM off or unavailable)")
+    km = keyword_map or TOPIC_KEYWORDS
+    out = []
+    for p in candidates:
+        text = p.get("text") or ""
         topic, score = classify_topic_scored(text, enabled, km)
         if score < min_topic_score or not topic:
             continue

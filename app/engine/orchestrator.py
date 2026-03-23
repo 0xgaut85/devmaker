@@ -458,16 +458,20 @@ class Orchestrator:
                 resp = await self._cmd("scrape_timeline", min_likes=20, max_posts=30, scroll_count=3, use_following_tab=following)
                 posts = resp.get("data", [])
 
-            eligible = build_eligible_posts(posts, enabled, self.cfg, min_topic_score=1)
+            classify_method = "LLM" if self.cfg.get("use_llm_classification", True) else "keywords"
+            self.log(f"Classifying posts ({classify_method})...")
+            eligible = build_eligible_posts(posts, enabled, self.cfg)
+            self.log(f"Topic gate: {len(eligible)}/{len(posts)} posts eligible ({classify_method}).")
+
             if len(eligible) < 3:
-                self.log("Dev: need more eligible posts — second scrape with lower bar...")
+                self.log("Need more eligible posts — second scrape with lower bar...")
                 resp2 = await self._cmd(
                     "scrape_timeline",
                     min_likes=10, max_posts=40, scroll_count=6, use_following_tab=following,
                 )
                 extra = resp2.get("data", [])
                 seen = {p.get("url") for p in eligible}
-                for p in build_eligible_posts(extra, enabled, self.cfg, min_topic_score=1):
+                for p in build_eligible_posts(extra, enabled, self.cfg):
                     u = p.get("url")
                     if u and u not in seen:
                         eligible.append(p)
@@ -483,7 +487,7 @@ class Orchestrator:
             if self._cancelled:
                 return False
 
-            self.log(f"Engagement pool: {len(eligible)} posts (topic gate + spam + trading policy).")
+            self.log(f"Engagement pool: {len(eligible)} posts.")
             random.shuffle(eligible)
             post_pool = eligible
             used_urls = set(self.state.get("recent_source_urls", []))

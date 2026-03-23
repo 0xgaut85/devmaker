@@ -182,13 +182,14 @@ LENGTH_TIERS = {
 }
 
 COMMENT_ROTATIONS = [
+    ["SHORT", "SHORT", "MEDIUM", "SHORT", "SHORT"],
+    ["SHORT", "MEDIUM", "SHORT", "SHORT", "SHORT"],
+    ["SHORT", "SHORT", "SHORT", "MEDIUM", "SHORT"],
+    ["MEDIUM", "SHORT", "SHORT", "SHORT", "MEDIUM"],
+    ["SHORT", "SHORT", "SHORT", "SHORT", "MEDIUM"],
     ["SHORT", "SHORT", "MEDIUM", "SHORT", "MEDIUM"],
-    ["SHORT", "MEDIUM", "SHORT", "SHORT", "MEDIUM"],
-    ["MEDIUM", "SHORT", "SHORT", "MEDIUM", "SHORT"],
-    ["SHORT", "SHORT", "SHORT", "MEDIUM", "MEDIUM"],
-    ["SHORT", "MEDIUM", "MEDIUM", "SHORT", "SHORT"],
-    ["MEDIUM", "SHORT", "SHORT", "SHORT", "LONG"],
-    ["SHORT", "SHORT", "MEDIUM", "LONG", "SHORT"],
+    ["SHORT", "MEDIUM", "SHORT", "SHORT", "LONG"],
+    ["SHORT", "SHORT", "SHORT", "SHORT", "SHORT"],
 ]
 
 TONE_TARGETS = {
