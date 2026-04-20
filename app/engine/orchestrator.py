@@ -459,7 +459,9 @@ class Orchestrator:
                 return None
             text = await asyncio.to_thread(gen_fn, **kwargs)
             if not text:
-                self.log(f"  [Gen] {gen_fn.__name__} returned None (validator rejected all attempts).")
+                from app.content.generator import get_last_rejection_reason
+                reason = get_last_rejection_reason() or "no reason recorded"
+                self.log(f"  [Gen] {gen_fn.__name__} returned None — last rejection: {reason}")
                 return None
             if not is_duplicate(text, recent):
                 return text

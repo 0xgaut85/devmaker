@@ -24,6 +24,94 @@ from app.content.validator import validate_and_fix, ValidationResult
 
 MAX_RETRIES = 3
 
+# Last rejection reason from any generator. The orchestrator reads this when a
+# generate_* call returns None so the dashboard can show *why* every retry
+# failed (Don't rule, voice judge, length cap, banned phrase, etc.).
+_LAST_REJECTION: str = ""
+
+
+def get_last_rejection_reason() -> str:
+    return _LAST_REJECTION
+
+
+def _record_rejection(reason: str) -> None:
+    global _LAST_REJECTION
+    _LAST_REJECTION = reason or ""
+
+
+def _clear_rejection() -> None:
+    global _LAST_REJECTION
+    _LAST_REJECTION = ""
+
+
+def _user_with_feedback(user: str, last_reason: str, last_attempt: str) -> str:
+    """Append a corrective feedback block so the LLM self-corrects on retry.
+
+    Without this, retries are pure dice rolls — same prompt, same temperature,
+    same likely failure mode. The block is only added on retries (last_reason set).
+    """
+    if not last_reason:
+        return user
+    snippet = (last_attempt or "").strip().replace("\n", " ")
+    if len(snippet) > 200:
+        snippet = snippet[:200] + "..."
+    feedback = (
+        "\n\nIMPORTANT — your previous attempt was rejected.\n"
+        f"Reason: {last_reason}\n"
+    )
+    if snippet:
+        feedback += f"Rejected text: {snippet}\n"
+    feedback += "Write a NEW post that fixes this issue. Do not repeat the same mistake."
+    return user + feedback
+
+
+def _generate_with_retries(
+    cfg: dict,
+    system: str,
+    user: str,
+    *,
+    length_tier: str | None,
+    dont_text: str,
+    voice: str,
+    call_fn=None,
+    label: str = "generate",
+    use_voice_judge: bool | None = None,
+) -> str | None:
+    """Canonical retry loop used by every generator.
+
+    - Calls `call_fn` (or `_call_llm`) up to MAX_RETRIES times.
+    - On rejection, appends the validator's reason to the user prompt so the
+      LLM can self-correct instead of rolling the dice again.
+    - Voice judge is opt-in via cfg["enable_voice_judge"] (defaults to off
+      because a second LLM call per attempt doubles cost and silently
+      kills generation when the judge is overstrict).
+    """
+    if call_fn is None:
+        call_fn = lambda u: _call_llm(cfg, system, u)
+    if use_voice_judge is None:
+        use_voice_judge = bool(cfg.get("enable_voice_judge", False))
+    _clear_rejection()
+    last_reason = ""
+    last_raw = ""
+    for attempt in range(MAX_RETRIES):
+        prompt = _user_with_feedback(user, last_reason, last_raw)
+        raw = call_fn(prompt)
+        last_raw = raw or ""
+        result = validate_and_fix(raw or "", length_tier, dont_text=dont_text, voice=voice)
+        if not result.passed:
+            last_reason = result.reason or "validator rejected"
+            _record_rejection(last_reason)
+            logger.info("[%s] attempt %d rejected: %s | %.80s", label, attempt + 1, last_reason, last_raw)
+            continue
+        if use_voice_judge and voice and not _passes_voice_judge(cfg, result.text, voice):
+            last_reason = "voice judge: text does not match the configured voice"
+            _record_rejection(last_reason)
+            logger.info("[%s] attempt %d rejected by voice judge | %.80s", label, attempt + 1, last_raw)
+            continue
+        return result.text
+    logger.warning("[%s] all %d attempts rejected (last: %s)", label, MAX_RETRIES, last_reason)
+    return None
+
 
 def _active_api_key(cfg: dict) -> str:
     if cfg.get("llm_provider") == "anthropic":
@@ -166,17 +254,18 @@ def _passes_voice_judge(cfg: dict, text: str, voice: str) -> bool:
     if not _active_api_key(cfg):
         return True
     system = (
-        "You are a strict voice/persona judge for short social posts. "
-        "You will be given a TARGET VOICE (a description of who the writer is supposed to be) "
-        "and a CANDIDATE post. Decide whether the candidate could plausibly have been written by "
-        "that exact persona. Be strict about obvious mismatches in vocabulary, tone, age, gender, "
-        "register, slang, and persona-breaking phrases. Minor stylistic variation is fine.\n\n"
+        "You are a lenient voice/persona judge for short social posts. "
+        "You will be given a TARGET VOICE (a description of the writer) and a CANDIDATE post. "
+        "Default to YES. Only answer NO when the candidate is OBVIOUSLY incompatible with the persona — "
+        "e.g. wrong gender markers, wildly wrong age register, persona-breaking phrases, or a tone that "
+        "clearly contradicts the description. Short, neutral, on-topic posts should pass. "
+        "Do not require slang, emojis, or stereotyped speech.\n\n"
         "Reply with EXACTLY one word: YES or NO. No explanation, no punctuation."
     )
     user = (
         f"TARGET VOICE:\n{voice}\n\n"
         f"CANDIDATE POST:\n{text}\n\n"
-        "Could this plausibly be written by that exact persona? YES or NO."
+        "Is this OBVIOUSLY incompatible with the persona? Answer NO only if clearly incompatible, otherwise YES."
     )
     try:
         raw = _call_llm(cfg, system, user, temperature=0.0, max_tokens=4)
@@ -210,14 +299,11 @@ def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
         dev_do=cfg.get("dev_do", ""),
         dev_dont=dont,
     )
-    for attempt in range(MAX_RETRIES):
-        raw = _call_llm(cfg, system, user)
-        result = validate_and_fix(raw, length_tier, dont_text=dont, voice=voice)
-        if result.passed and _passes_voice_judge(cfg, result.text, voice):
-            return result.text
-        logger.info("[generate_tweet] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason or "voice judge", raw)
-    logger.warning("[generate_tweet] All %d attempts rejected", MAX_RETRIES)
-    return None
+    return _generate_with_retries(
+        cfg, system, user,
+        length_tier=length_tier, dont_text=dont, voice=voice,
+        label="generate_tweet",
+    )
 
 
 def generate_quote_comment(cfg: dict, original_tweet: str,
@@ -239,15 +325,15 @@ def generate_quote_comment(cfg: dict, original_tweet: str,
         dev_do=cfg.get("dev_do", ""),
         dev_dont=dont,
     )
-    call_fn = lambda: _call_llm_with_images_for_generation(cfg, system, user, images) if images else _call_llm(cfg, system, user)
-    for attempt in range(MAX_RETRIES):
-        raw = call_fn()
-        result = validate_and_fix(raw, "SHORT", dont_text=dont, voice=voice)
-        if result.passed and _passes_voice_judge(cfg, result.text, voice):
-            return result.text
-        logger.info("[generate_quote] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason or "voice judge", raw)
-    logger.warning("[generate_quote] All %d attempts rejected", MAX_RETRIES)
-    return None
+    if images:
+        call_fn = lambda u: _call_llm_with_images_for_generation(cfg, system, u, images)
+    else:
+        call_fn = lambda u: _call_llm(cfg, system, u)
+    return _generate_with_retries(
+        cfg, system, user,
+        length_tier="SHORT", dont_text=dont, voice=voice,
+        call_fn=call_fn, label="generate_quote",
+    )
 
 
 def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, tone: str,
@@ -275,15 +361,15 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
         dev_do=cfg.get("dev_do", ""),
         dev_dont=dont,
     )
-    call_fn = lambda: _call_llm_with_images_for_generation(cfg, system, user, images) if images else _call_llm(cfg, system, user)
-    for attempt in range(MAX_RETRIES):
-        raw = call_fn()
-        result = validate_and_fix(raw, length_tier, dont_text=dont, voice=voice)
-        if result.passed and _passes_voice_judge(cfg, result.text, voice):
-            return result.text
-        logger.info("[generate_reply] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason or "voice judge", raw)
-    logger.warning("[generate_reply] All %d attempts rejected", MAX_RETRIES)
-    return None
+    if images:
+        call_fn = lambda u: _call_llm_with_images_for_generation(cfg, system, u, images)
+    else:
+        call_fn = lambda u: _call_llm(cfg, system, u)
+    return _generate_with_retries(
+        cfg, system, user,
+        length_tier=length_tier, dont_text=dont, voice=voice,
+        call_fn=call_fn, label="generate_reply",
+    )
 
 
 def _is_safe_project_comment(text: str) -> bool:
@@ -346,14 +432,11 @@ def generate_degen_tweet(cfg: dict, format_key: str, original_tweet: str,
         cfg.get("degen_do", ""), dont,
         recent_posts=recent_posts,
     )
-    for attempt in range(MAX_RETRIES):
-        raw = _call_llm(cfg, system, user)
-        result = validate_and_fix(raw, "MEDIUM", dont_text=dont, voice=voice)
-        if result.passed and _passes_voice_judge(cfg, result.text, voice):
-            return result.text
-        logger.info("[generate_degen_tweet] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason or "voice judge", raw)
-    logger.warning("[generate_degen_tweet] All %d attempts rejected", MAX_RETRIES)
-    return None
+    return _generate_with_retries(
+        cfg, system, user,
+        length_tier="MEDIUM", dont_text=dont, voice=voice,
+        label="generate_degen_tweet",
+    )
 
 
 def generate_degen_quote_comment(cfg: dict, original_tweet: str,
@@ -365,14 +448,11 @@ def generate_degen_quote_comment(cfg: dict, original_tweet: str,
         cfg.get("degen_do", ""), dont,
         recent_posts=recent_posts,
     )
-    for attempt in range(MAX_RETRIES):
-        raw = _call_llm(cfg, system, user)
-        result = validate_and_fix(raw, "SHORT", dont_text=dont, voice=voice)
-        if result.passed and _passes_voice_judge(cfg, result.text, voice):
-            return result.text
-        logger.info("[generate_degen_quote] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason or "voice judge", raw)
-    logger.warning("[generate_degen_quote] All %d attempts rejected", MAX_RETRIES)
-    return None
+    return _generate_with_retries(
+        cfg, system, user,
+        length_tier="SHORT", dont_text=dont, voice=voice,
+        label="generate_degen_quote",
+    )
 
 
 def generate_degen_reply_comment(cfg: dict, original_tweet: str, length_tier: str, tone: str,
@@ -389,14 +469,11 @@ def generate_degen_reply_comment(cfg: dict, original_tweet: str, length_tier: st
         post_type=post_type, reply_strategy=reply_strategy,
         existing_replies=existing_replies, positions=positions,
     )
-    for attempt in range(MAX_RETRIES):
-        raw = _call_llm(cfg, system, user)
-        result = validate_and_fix(raw, length_tier, dont_text=dont, voice=voice)
-        if result.passed and _passes_voice_judge(cfg, result.text, voice):
-            return result.text
-        logger.info("[generate_degen_reply] Attempt %d rejected: %s | %.80s", attempt + 1, result.reason or "voice judge", raw)
-    logger.warning("[generate_degen_reply] All %d attempts rejected", MAX_RETRIES)
-    return None
+    return _generate_with_retries(
+        cfg, system, user,
+        length_tier=length_tier, dont_text=dont, voice=voice,
+        label="generate_degen_reply",
+    )
 
 
 def generate_thread(cfg: dict, thread_format_key: str, original_tweet: str,
@@ -416,11 +493,19 @@ def generate_thread(cfg: dict, thread_format_key: str, original_tweet: str,
         dev_do=cfg.get("dev_do", ""),
         dev_dont=dont,
     )
+    use_voice_judge = bool(cfg.get("enable_voice_judge", False))
+    _clear_rejection()
+    last_reason = ""
+    last_raw = ""
     for attempt in range(MAX_RETRIES):
-        raw = _call_llm(cfg, system, user)
-        tweets = [t.strip() for t in raw.split("---") if t.strip()]
+        prompt = _user_with_feedback(user, last_reason, last_raw)
+        raw = _call_llm(cfg, system, prompt)
+        last_raw = raw or ""
+        tweets = [t.strip() for t in (raw or "").split("---") if t.strip()]
         if len(tweets) < 2:
-            logger.info("[generate_thread] Attempt %d: only %d segments, retrying", attempt + 1, len(tweets))
+            last_reason = f"only {len(tweets)} thread segment(s), need >=2 separated by ---"
+            _record_rejection(last_reason)
+            logger.info("[generate_thread] attempt %d: %s", attempt + 1, last_reason)
             continue
         validated: list[str] = []
         rejected_reason = ""
@@ -433,14 +518,17 @@ def generate_thread(cfg: dict, thread_format_key: str, original_tweet: str,
                 break
             validated.append(result.text)
         if not all_passed or len(validated) < 2:
-            logger.info("[generate_thread] Attempt %d rejected: %s", attempt + 1, rejected_reason)
+            last_reason = rejected_reason or "thread validation failed"
+            _record_rejection(last_reason)
+            logger.info("[generate_thread] attempt %d rejected: %s", attempt + 1, last_reason)
             continue
-        # Voice judge runs once per thread on the full joined text.
-        if not _passes_voice_judge(cfg, "\n\n".join(validated), voice):
-            logger.info("[generate_thread] Attempt %d rejected by voice judge", attempt + 1)
+        if use_voice_judge and voice and not _passes_voice_judge(cfg, "\n\n".join(validated), voice):
+            last_reason = "voice judge: thread does not match the configured voice"
+            _record_rejection(last_reason)
+            logger.info("[generate_thread] attempt %d rejected by voice judge", attempt + 1)
             continue
         return validated
-    logger.warning("[generate_thread] All %d attempts rejected", MAX_RETRIES)
+    logger.warning("[generate_thread] all %d attempts rejected (last: %s)", MAX_RETRIES, last_reason)
     return None
 
 

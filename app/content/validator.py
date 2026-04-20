@@ -94,6 +94,9 @@ _EMOJI_RE = re.compile(
     flags=re.UNICODE,
 )
 
+# Only catch genuine persona breaks. Brand names (claude, openai, anthropic,
+# chatgpt) are intentionally NOT here — they are valid topics on tech Twitter
+# and rejecting them creates infinite retries when the source post is about AI.
 _AI_LEAK_PATTERNS = [
     r"\bas an ai\b",
     r"\bas a language model\b",
@@ -102,10 +105,6 @@ _AI_LEAK_PATTERNS = [
     r"\bi cannot (?:help|assist|provide|generate|fulfill)\b",
     r"\bi can'?t (?:help|assist|provide|generate|fulfill)\b",
     r"\bi'?m sorry,? (?:but )?i (?:can|cannot|am unable|won'?t)\b",
-    r"\bopenai\b",
-    r"\banthropic\b",
-    r"\bclaude\b",
-    r"\bchatgpt\b",
 ]
 
 
@@ -149,8 +148,7 @@ def _check_dont_rules(text: str, dont_text: str) -> tuple[bool, str]:
 
         # ALL CAPS
         if re.search(r"\bno\s+(?:all[- ]?)?caps\b", l) or re.search(r"don'?t\s+(?:shout|yell)", l):
-            for word in re.findall(r"[A-Z]{4,}", raw):
-                # ignore tickers like $BTC (already excluded by the [A-Z] class — no $)
+            if re.findall(r"\b[A-Z]{4,}\b", raw):
                 return True, line
             continue
 
@@ -172,26 +170,25 @@ def _check_dont_rules(text: str, dont_text: str) -> tuple[bool, str]:
                 return True, line
             continue
 
-        # Quoted forbidden phrases — extract every "..." or '...' and treat as banned literals.
-        quoted = re.findall(r"[\"“]([^\"”]+)[\"”]|'([^']+)'", line)
-        flat_quoted = [q1 or q2 for (q1, q2) in quoted if (q1 or q2).strip()]
-        if flat_quoted:
-            hit_phrase = next((p for p in flat_quoted if p.lower() in lower), None)
-            if hit_phrase:
-                return True, line
-            continue
+        # NOTE: We deliberately do NOT auto-ban quoted substrings. Users use
+        # quotes for emphasis ("tech aspect") far more often than to mark a
+        # forbidden literal, and false positives loop the generator forever.
+        # Explicit per-rule matchers above handle the structural bans.
 
-        # Generic "no <word>" / "avoid <word>" / "don't say <word>"
+        # Generic "no <word>" / "avoid <word>" / "don't say <word>" — only when
+        # the remainder is short and looks like an actual phrase (<=4 words),
+        # otherwise we'd reject any tweet containing a common word.
         m = re.match(r"(?:no|avoid|don'?t\s+(?:say|use|include|write))\s+(.+)", l)
         if m:
             phrase = m.group(1).strip().strip(".,;:!?")
-            if phrase and re.search(rf"\b{re.escape(phrase)}\b", lower):
+            words = phrase.split()
+            # Skip filler like "at all", "ever", "please" so 'no emojis at all' -> phrase 'emojis'
+            while words and words[-1].lower() in {"at", "all", "ever", "please", "anymore", "now"}:
+                words.pop()
+            phrase = " ".join(words)
+            if phrase and 1 <= len(words) <= 4 and re.search(rf"\b{re.escape(phrase)}\b", lower):
                 return True, line
             continue
-
-        # Fallback: if the line itself is a short literal (<=40 chars) treat as banned phrase.
-        if len(line) <= 40 and re.search(rf"\b{re.escape(l)}\b", lower):
-            return True, line
 
     return False, ""
 
@@ -238,22 +235,24 @@ def validate_and_fix(
         if phrase.lower() in lower:
             return ValidationResult(text, False, f"Contains banned phrase: {phrase}")
 
-    # Reject empty reaction-style posts that reference something not visible
-    _REACTION_PATTERNS = [
-        r"^that'?s\s+(the|so|really|actually|literally)",
-        r"^this hits",
-        r"^needed (this|to hear)",
-        r"^felt this",
-        r"^real talk right here",
-        r"^say it louder",
-    ]
-    for pat in _REACTION_PATTERNS:
-        if re.match(pat, lower):
-            return ValidationResult(text, False, f"Reaction-style post: {pat}")
+    # Reject empty reaction-style posts ONLY for original tweets / quotes — short
+    # replies are allowed to be reactions because that's how replies actually work.
+    if length_tier and length_tier != "SHORT":
+        _REACTION_PATTERNS = [
+            r"^this hits",
+            r"^needed (this|to hear)\.?$",
+            r"^felt this\.?$",
+            r"^real talk right here\.?$",
+            r"^say it louder\.?$",
+        ]
+        for pat in _REACTION_PATTERNS:
+            if re.match(pat, lower):
+                return ValidationResult(text, False, f"Reaction-style post: {pat}")
 
-    # Reject posts that are too short to have substance (under 30 chars with no question mark)
-    if len(text) < 30 and "?" not in text:
-        return ValidationResult(text, False, f"Too short to have substance: {len(text)} chars")
+    # Substance floor: only enforced for non-SHORT tiers.
+    if length_tier and length_tier != "SHORT":
+        if len(text) < 30 and "?" not in text:
+            return ValidationResult(text, False, f"Too short to have substance: {len(text)} chars")
 
     if length_tier and length_tier in ("MEDIUM", "LONG", "XL"):
         sentences = re.split(r"(?<=[.!?])\s+", text)

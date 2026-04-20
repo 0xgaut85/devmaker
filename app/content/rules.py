@@ -43,32 +43,20 @@ ANTI-FABRICATION (critical):
 - Comment on the TOPIC, not on fake things you supposedly did.
 """.strip()
 
+# Hard-coded slop list — kept intentionally TIGHT.
+# Users now control content via dev_do/dev_dont; the only entries here are
+# universally agreed LLM tells that no one writes naturally on X. We removed
+# first-person fabrication phrases ("i built", "i shipped"…) because
+# (a) the ANTI_FABRICATION prompt block already steers the LLM, and
+# (b) banning them outright contradicts personas where the user IS a dev who
+#     legitimately ships things, which caused infinite retry loops.
 BANNED_PHRASES = [
     "game-changer",
-    "truly",
-    "genuinely",
     "dive deep",
     "let's be real",
     "at the end of the day",
-    "this is so important",
     "underrated gem",
     "can't recommend enough",
-    "i built",
-    "i shipped",
-    "i created",
-    "i launched",
-    "i made a",
-    "i made an",
-    "we built",
-    "we shipped",
-    "we launched",
-    "we created",
-    "last month i",
-    "last week i",
-    "yesterday i built",
-    "i just built",
-    "i just shipped",
-    "i just launched",
 ]
 
 BANNED_OPENERS = [
@@ -84,14 +72,6 @@ BANNED_OPENERS = [
     "so true,",
     "so true ",
     "so true.",
-    "that's the ",
-    "that's so ",
-    "this hits ",
-    "needed this",
-    "needed to hear",
-    "felt this",
-    "say it louder",
-    "real talk",
     "couldn't agree more",
     "this right here",
 ]
