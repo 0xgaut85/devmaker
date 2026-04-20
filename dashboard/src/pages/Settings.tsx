@@ -138,6 +138,7 @@ export default function Settings() {
           <Number label="Likes" value={config.daily_max_likes} onChange={(v) => update("daily_max_likes", v)} />
           <Number label="Follows" value={config.daily_max_follows} onChange={(v) => update("daily_max_follows", v)} />
           <Number label="QRTs" value={config.daily_max_qrts} onChange={(v) => update("daily_max_qrts", v)} />
+          <Number label="RTs" value={config.daily_max_rts} onChange={(v) => update("daily_max_rts", v)} />
         </Section>
 
         <Section title="Active Hours">
@@ -199,11 +200,26 @@ function TextArea({ label, value, onChange }: { label: string; value: string; on
 }
 
 function Number({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  const display = value === undefined || value === null ? "" : String(value);
   return (
     <div className="flex items-center gap-3">
       <label className="text-xs text-neutral-400 w-40 shrink-0">{label}</label>
-      <input type="number" value={value ?? 0} onChange={(e) => onChange(parseInt(e.target.value) || 0)}
-        className="w-24 bg-neutral-800 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-white outline-none focus:border-neutral-500 text-center" />
+      <input
+        type="number"
+        min={0}
+        value={display}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") {
+            onChange(0);
+            return;
+          }
+          const parsed = parseInt(raw, 10);
+          if (Number.isNaN(parsed)) return;
+          onChange(parsed < 0 ? 0 : parsed);
+        }}
+        className="w-24 bg-neutral-800 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-white outline-none focus:border-neutral-500 text-center"
+      />
     </div>
   );
 }

@@ -14,6 +14,9 @@ from app.ws.handler import _add_log
 logger = logging.getLogger(__name__)
 
 _running: dict[str, Orchestrator] = {}
+_tasks: dict[str, asyncio.Task] = {}
+_log_tasks: set[asyncio.Task] = set()
+_lock = asyncio.Lock()
 
 
 def _config_to_dict(cfg: Config) -> dict:
@@ -40,74 +43,104 @@ async def _save_state(account_id: str, state_dict: dict):
             await session.commit()
 
 
+async def save_state_now(account_id: str, state_dict: dict) -> None:
+    """Public helper so the orchestrator can flush state mid-batch.
+
+    Failures are logged but never raised — persistence must not break the
+    running sequence.
+    """
+    try:
+        await _save_state(account_id, state_dict)
+    except Exception:
+        logger.exception("save_state_now failed for %s", account_id)
+
+
 async def start_sequence(account_id: str, count: int = 1) -> bool:
     """Start a farming batch for an account. Returns False if already running."""
-    if account_id in _running:
-        return False
-
-    if not manager.is_connected(account_id):
-        await _add_log(account_id, "Cannot start: no extension connected.", "error")
-        return False
-
-    async with async_session() as session:
-        acct_result = await session.execute(
-            select(Account).where(Account.id == account_id)
-        )
-        acct_obj = acct_result.scalar_one_or_none()
-
-        result = await session.execute(
-            select(Config).where(Config.account_id == account_id)
-        )
-        cfg_obj = result.scalar_one_or_none()
-        if not cfg_obj:
-            await _add_log(account_id, "Cannot start: no config found.", "error")
+    async with _lock:
+        if account_id in _running:
             return False
 
-        result = await session.execute(
-            select(State).where(State.account_id == account_id)
-        )
-        st_obj = result.scalar_one_or_none()
-        if not st_obj:
-            st_obj = State(account_id=account_id)
-            session.add(st_obj)
-            await session.commit()
+        if not manager.is_connected(account_id):
+            await _add_log(account_id, "Cannot start: no extension connected.", "error")
+            return False
 
-        cfg_dict = _config_to_dict(cfg_obj)
-        cfg_dict["account_handle"] = acct_obj.name if acct_obj else ""
-        state_dict = _state_to_dict(st_obj)
+        async with async_session() as session:
+            acct_result = await session.execute(
+                select(Account).where(Account.id == account_id)
+            )
+            acct_obj = acct_result.scalar_one_or_none()
 
-    async def log_fn(msg: str, level: str = "info"):
-        await _add_log(account_id, msg, level)
+            result = await session.execute(
+                select(Config).where(Config.account_id == account_id)
+            )
+            cfg_obj = result.scalar_one_or_none()
+            if not cfg_obj:
+                await _add_log(account_id, "Cannot start: no config found.", "error")
+                return False
 
-    def sync_log(msg: str):
-        asyncio.create_task(log_fn(msg))
+            result = await session.execute(
+                select(State).where(State.account_id == account_id)
+            )
+            st_obj = result.scalar_one_or_none()
+            if not st_obj:
+                st_obj = State(account_id=account_id)
+                session.add(st_obj)
+                await session.commit()
 
-    orch = Orchestrator(account_id, cfg_dict, state_dict, sync_log)
-    _running[account_id] = orch
+            cfg_dict = _config_to_dict(cfg_obj)
+            cfg_dict["account_handle"] = acct_obj.name if acct_obj else ""
+            state_dict = _state_to_dict(st_obj)
 
-    async def run_and_cleanup():
-        try:
-            await orch.run_batch(count)
-        except Exception as e:
-            logger.exception(f"Orchestrator error for {account_id}")
-            await log_fn(f"Fatal error: {e}", "error")
-        finally:
-            await _save_state(account_id, orch.state)
-            _running.pop(account_id, None)
-            await log_fn("Sequence batch finished.")
+        async def log_fn(msg: str, level: str = "info"):
+            await _add_log(account_id, msg, level)
 
-    asyncio.create_task(run_and_cleanup())
-    await log_fn(f"Started {count}-sequence batch.")
-    return True
+        def sync_log(msg: str):
+            # Track the task so it can't be GC'd before it runs.
+            task = asyncio.create_task(log_fn(msg))
+            _log_tasks.add(task)
+            task.add_done_callback(_log_tasks.discard)
+
+        orch = Orchestrator(account_id, cfg_dict, state_dict, sync_log)
+        # Wire persistence helper so the orchestrator can flush after each action.
+        orch.persist_state = lambda: save_state_now(account_id, orch.state)  # type: ignore[attr-defined]
+        _running[account_id] = orch
+
+        async def run_and_cleanup():
+            try:
+                await orch.run_batch(count)
+            except Exception as e:
+                logger.exception(f"Orchestrator error for {account_id}")
+                await log_fn(f"Fatal error: {e}", "error")
+            finally:
+                await _save_state(account_id, orch.state)
+                async with _lock:
+                    _running.pop(account_id, None)
+                    _tasks.pop(account_id, None)
+                await log_fn("Sequence batch finished.")
+
+        task = asyncio.create_task(run_and_cleanup())
+        _tasks[account_id] = task
+        await log_fn(f"Started {count}-sequence batch.")
+        return True
 
 
 async def stop_sequence(account_id: str) -> bool:
-    """Cancel a running sequence for an account."""
-    orch = _running.get(account_id)
+    """Cancel a running sequence for an account and wait for it to settle."""
+    async with _lock:
+        orch = _running.get(account_id)
+        task = _tasks.get(account_id)
     if not orch:
         return False
     orch.cancel()
     await _add_log(account_id, "Sequence cancelled by user.")
+    if task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=30)
+        except asyncio.TimeoutError:
+            logger.warning("stop_sequence: orchestrator for %s did not finish within 30s", account_id)
+        except Exception:
+            logger.exception("stop_sequence: orchestrator for %s raised on shutdown", account_id)
     return True
 
 

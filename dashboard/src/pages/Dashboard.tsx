@@ -41,8 +41,12 @@ export default function Dashboard() {
         try {
           const data = JSON.parse(event.data);
           if (data.type === "log") {
+            const newId =
+              typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+                ? crypto.randomUUID()
+                : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
             setLogs((prev) => [...prev.slice(-499), {
-              id: Date.now().toString(),
+              id: newId,
               message: data.message,
               level: data.level,
               timestamp: data.timestamp,

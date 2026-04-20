@@ -346,15 +346,26 @@ def generate_thread(cfg: dict, thread_format_key: str, original_tweet: str,
         cfg=cfg,
         enabled_topics=enabled_topics,
     )
-    for _ in range(MAX_RETRIES):
+    for attempt in range(MAX_RETRIES):
         raw = _call_llm(cfg, system, user)
         tweets = [t.strip() for t in raw.split("---") if t.strip()]
-        if len(tweets) >= 2:
-            validated = []
-            for tweet in tweets:
-                result = validate_and_fix(tweet, "MEDIUM")
-                validated.append(result.text)
+        if len(tweets) < 2:
+            logger.info("[generate_thread] Attempt %d: only %d segments, retrying", attempt + 1, len(tweets))
+            continue
+        validated: list[str] = []
+        rejected_reason = ""
+        all_passed = True
+        for tweet in tweets:
+            result = validate_and_fix(tweet, "MEDIUM")
+            if not result.passed:
+                all_passed = False
+                rejected_reason = result.reason
+                break
+            validated.append(result.text)
+        if all_passed and len(validated) >= 2:
             return validated
+        logger.info("[generate_thread] Attempt %d rejected: %s", attempt + 1, rejected_reason)
+    logger.warning("[generate_thread] All %d attempts rejected by validator", MAX_RETRIES)
     return None
 
 
@@ -504,12 +515,15 @@ def extract_position(cfg: dict, posted_text: str) -> dict | None:
 
 def check_image_relevance_with_vision(cfg: dict, image_b64: str, generated_text: str,
                                       mime_type: str = "image/jpeg") -> bool:
+    """Return True only when vision confirms relevance. Fail-closed on any error/missing key
+    so we never attach a possibly-irrelevant image to our own post."""
     if not _active_api_key(cfg):
-        return True
+        return False
     system = "You verify whether an image is relevant to a tweet. Answer ONLY 'YES' or 'NO'."
     user = f'Does this image relate to the following tweet text? Answer YES or NO.\nTweet: "{generated_text}"'
     try:
         raw = _call_llm_with_image(cfg, system, user, image_b64, mime_type)
         return "YES" in raw.upper()
-    except Exception:
-        return True
+    except Exception as exc:
+        logger.warning("[vision] relevance check failed, skipping image: %s", exc)
+        return False

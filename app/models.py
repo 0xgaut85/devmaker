@@ -96,6 +96,7 @@ class Config(Base):
     daily_max_likes = Column(Integer, default=50)
     daily_max_follows = Column(Integer, default=10)
     daily_max_qrts = Column(Integer, default=5)
+    daily_max_rts = Column(Integer, default=10)
 
     # Active hours
     active_hours_enabled = Column(Boolean, default=False)

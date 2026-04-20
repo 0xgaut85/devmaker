@@ -18,11 +18,39 @@ def _word_set(text: str) -> set[str]:
     return words - _STOPWORDS
 
 
-def is_too_similar(text: str, recent_texts: list[str], threshold: float = 0.55) -> bool:
+def is_duplicate(
+    text: str,
+    recent_texts: list[str],
+    *,
+    threshold: float = 0.55,
+    short_threshold: float = 0.85,
+) -> bool:
+    """Single canonical dedup check used by every generator + the orchestrator.
+
+    For very short posts (<3 unique non-stopword tokens) we used to bypass entirely,
+    which let generic "ship ship ship" style replies repeat forever. Now we still
+    check exact-or-near-exact match for shorts using a strict ratio.
+    """
     if not recent_texts:
+        return False
+    normalized = (text or "").strip().lower()
+    if not normalized:
         return False
     new_words = _word_set(text)
     if len(new_words) < 3:
+        for prev in recent_texts:
+            prev_normalized = (prev or "").strip().lower()
+            if not prev_normalized:
+                continue
+            if normalized == prev_normalized:
+                return True
+            prev_words = _word_set(prev)
+            if not prev_words:
+                continue
+            intersection = len(new_words & prev_words)
+            union = len(new_words | prev_words)
+            if union > 0 and intersection / union >= short_threshold:
+                return True
         return False
     for prev in recent_texts:
         prev_words = _word_set(prev)
@@ -33,6 +61,11 @@ def is_too_similar(text: str, recent_texts: list[str], threshold: float = 0.55) 
         if union > 0 and intersection / union >= threshold:
             return True
     return False
+
+
+def is_too_similar(text: str, recent_texts: list[str], threshold: float = 0.55) -> bool:
+    """Backwards-compatible wrapper around :func:`is_duplicate`."""
+    return is_duplicate(text, recent_texts, threshold=threshold)
 
 
 class ValidationResult:

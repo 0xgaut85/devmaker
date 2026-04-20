@@ -23,6 +23,28 @@ SPAM_SUBSTRINGS = [
     "retweet to win", "follow and rt", "like and retweet", "tag a friend",
 ]
 
+# Keyword skip used by the keyword fallback path so it mirrors the LLM
+# political-content rule. We deliberately keep this list short and unambiguous
+# to avoid false positives.
+_POLITICAL_SKIP_HINTS = (
+    "election", "elections", "ballot", "vote ", " votes",
+    "president", "presidential", "white house", "congress",
+    "senate", "parliament", "prime minister", "chancellor",
+    "republican", "democrat", "gop ", "leftist", "rightist",
+    "trump", "biden", "harris", "putin", "xi jinping",
+    "war ", "ceasefire", "airstrike", "invasion", "occupation",
+    "geopolit", "diplomatic", "sanction", "regime",
+    "israel", "gaza", "palestin", "ukraine", "russia",
+    "iran", "houthi", "hezbollah", "hamas",
+)
+
+
+def _looks_political(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    return any(h in t for h in _POLITICAL_SKIP_HINTS)
+
 
 def is_spam_post(post: dict[str, Any]) -> bool:
     text = (post.get("text") or "").lower()
@@ -59,7 +81,7 @@ def build_eligible_posts(
     cfg: dict[str, Any],
     *,
     keyword_map: dict[str, list[str]] | None = None,
-    min_topic_score: int = 1,
+    min_topic_score: int = 2,
 ) -> list[dict[str, Any]]:
     """
     Single gate: spam → trading policy → per-post LLM category (or keyword fallback).
@@ -108,9 +130,12 @@ def build_eligible_posts(
     # --- keyword fallback ---
     logger.info("[engagement_gate] Using keyword classification (LLM off or unavailable)")
     km = keyword_map or TOPIC_KEYWORDS
+    skip_political = bool(cfg.get("exclude_political_timeline", True))
     out = []
     for p in candidates:
         text = p.get("text") or ""
+        if skip_political and _looks_political(text):
+            continue
         topic, score = classify_topic_scored(text, enabled, km)
         if score < min_topic_score or not topic:
             continue

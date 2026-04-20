@@ -11,6 +11,7 @@ class CommandType(str, Enum):
     # Scraping
     SCRAPE_TIMELINE = "scrape_timeline"
     SCRAPE_PROFILE = "scrape_profile"
+    SCRAPE_OWN_PROFILE = "scrape_own_profile"
     SCRAPE_REPLIES = "scrape_replies"
     SCRAPE_RETWEETS = "scrape_retweets"
     SCRAPE_WHO_TO_FOLLOW = "scrape_who_to_follow"
@@ -25,6 +26,7 @@ class CommandType(str, Enum):
     BOOKMARK_POST = "bookmark_post"
     FOLLOW_USER = "follow_user"
     RETWEET = "retweet"
+    DISMISS_COMPOSE = "dismiss_compose"
 
     # Session
     SESSION_WARMUP = "session_warmup"

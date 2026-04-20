@@ -25,7 +25,7 @@ EXPOSED_FIELDS = [
     "thread_every_n_sequences",
     "use_llm_classification", "use_vision_image_check", "position_memory_enabled",
     "daily_max_tweets", "daily_max_comments", "daily_max_likes",
-    "daily_max_follows", "daily_max_qrts",
+    "daily_max_follows", "daily_max_qrts", "daily_max_rts",
     "active_hours_enabled", "active_hours_start", "active_hours_end", "active_hours_timezone",
     "personality_humor", "personality_sarcasm", "personality_confidence", "personality_warmth",
     "personality_controversy", "personality_intellect", "personality_brevity", "personality_edginess",

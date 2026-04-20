@@ -87,15 +87,20 @@ def _personality_block(cfg: dict) -> str:
 
 
 def _topics_block(enabled_topics: list[str]) -> str:
-    """Tell the LLM which topics are allowed."""
+    """Tell the LLM which topics are allowed.
+
+    The eligibility gate already guarantees the source tweet matches one of these
+    topics, so the model should stay aligned with the source's natural topic
+    instead of force-fitting an unrelated angle.
+    """
     if not enabled_topics:
         return ""
     topics_str = ", ".join(enabled_topics[:20])
     return (
         f"ALLOWED TOPICS: {topics_str}\n"
-        f"IMPORTANT: Only write about these topics. If the source tweet is off-topic "
-        f"(e.g. relationships, memes unrelated to your topics, gossip, influencer drama), "
-        f"adapt it to one of YOUR topics instead. Never produce off-topic content.\n"
+        f"IMPORTANT: The source tweet has already been classified as ON-TOPIC for one of the above. "
+        f"Stay aligned with the topic the source is actually about. Do NOT pivot to an unrelated "
+        f"topic from the list. Do NOT produce political, geopolitical, or off-topic content.\n"
     )
 
 

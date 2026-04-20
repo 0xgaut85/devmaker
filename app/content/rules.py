@@ -113,6 +113,24 @@ FORMAT_CATALOG = {
 
 FORMAT_ORDER = list(FORMAT_CATALOG.keys())
 
+# Each tweet format has a natural length. Coupling them here prevents the
+# orchestrator from generating, e.g., a "long reflection" with a SHORT cap or a
+# one-liner mic drop with a LONG cap.
+LENGTH_FOR_FORMAT: dict[str, str] = {
+    "A": "SHORT",   # Short punch
+    "B": "MEDIUM",  # Numbered list
+    "C": "MEDIUM",  # Observation
+    "D": "MEDIUM",  # Question hook
+    "E": "MEDIUM",  # Contrarian opener
+    "F": "LONG",    # Long reflection
+    "G": "LONG",    # Bullet list with intro
+    "H": "SHORT",   # One-liner mic drop
+    "I": "MEDIUM",  # Comparison
+    "J": "SHORT",   # Practical tip
+    "K": "MEDIUM",  # Hot take on a tool
+    "L": "MEDIUM",  # Industry pattern
+}
+
 DEGEN_FORMAT_CATALOG = {
     "DA": {"name": "CT hot take", "desc": "1-2 sentences. Spicy crypto Twitter opinion. Confident tone."},
     "DB": {"name": "Market call", "desc": "Short price/market take. Reference a coin or trend. Bold conviction."},
