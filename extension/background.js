@@ -180,7 +180,9 @@ function connectWs() {
 
   ws.onerror = (err) => {
     console.error("[DevMaker] WebSocket error:", err);
-    ws.close();
+    try { ws.close(); } catch {}
+    // onclose may not fire on every error path; force a reconnect attempt.
+    scheduleReconnect();
   };
 }
 
@@ -224,12 +226,41 @@ function broadcastStatus(status) {
   chrome.runtime.sendMessage({ type: "status", status }).catch(() => {});
 }
 
-// Ping to keep alive
-setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ cmd: "ping" }));
+// Keep the MV3 service worker alive AND the WS healthy.
+// `setInterval` does NOT keep the SW alive — Chrome suspends it after ~30s of
+// inactivity, the timer stops, and the WS dies silently. `chrome.alarms` wakes
+// the SW on schedule, so the ping fires and the WS stays open. If the WS is
+// gone when the alarm fires, we reconnect immediately instead of waiting for
+// the next backend command (which would otherwise fail with "No extension
+// connected").
+chrome.alarms.create("ws-keepalive", { periodInMinutes: 0.4 }); // ~24s
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== "ws-keepalive") return;
+  if (!wsUrl || !accountId) return;
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    connectWs();
+    return;
   }
-}, 25000);
+  if (ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ cmd: "ping" }));
+    } catch {
+      try { ws.close(); } catch {}
+      scheduleReconnect();
+    }
+  }
+});
+
+// Re-establish the connection when the SW wakes from cold start.
+chrome.runtime.onStartup.addListener(() => {
+  chrome.storage.local.get(["backendUrl", "accountId"], (data) => {
+    if (data.backendUrl && data.accountId) {
+      wsUrl = data.backendUrl;
+      accountId = data.accountId;
+      connectWs();
+    }
+  });
+});
 
 // Listen for config updates from popup
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

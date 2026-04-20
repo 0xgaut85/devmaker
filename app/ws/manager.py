@@ -54,12 +54,36 @@ class ConnectionManager:
         self._pending[req_id] = future
 
         try:
-            await ws.send_json({"req_id": req_id, "cmd": cmd, "params": params})
+            try:
+                await ws.send_json({"req_id": req_id, "cmd": cmd, "params": params})
+            except Exception as e:
+                # Socket died between our is_connected check and send. Drop the
+                # entry so the next caller fails fast at the top, and surface a
+                # clean ConnectionError so the orchestrator can pause/retry
+                # instead of burning through every candidate back-to-back.
+                self._connections.pop(account_id, None)
+                logger.warning("send failed for %s: %s — dropping stale connection", account_id, e)
+                raise ConnectionError(f"Extension socket dead for account {account_id}") from e
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(f"Command {cmd} timed out after {timeout}s")
         finally:
             self._pending.pop(req_id, None)
+
+    async def wait_until_connected(self, account_id: str, timeout: float = 30.0) -> bool:
+        """Block up to `timeout` seconds for the extension to (re)connect.
+
+        Returns True if connected within the window, False otherwise. Used by
+        the orchestrator to recover from transient extension drops (e.g. the
+        Chrome MV3 service worker being suspended) instead of failing every
+        queued action immediately.
+        """
+        deadline = asyncio.get_event_loop().time() + max(0.0, timeout)
+        while asyncio.get_event_loop().time() < deadline:
+            if account_id in self._connections:
+                return True
+            await asyncio.sleep(0.5)
+        return account_id in self._connections
 
     def resolve(self, req_id: str, response: dict):
         """Called when the extension sends a response back."""

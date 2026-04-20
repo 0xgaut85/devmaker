@@ -85,10 +85,24 @@ class Orchestrator:
     _SLOW_COMMANDS = {"post_tweet", "post_comment", "post_thread", "quote_tweet", "session_warmup", "scrape_timeline"}
 
     async def _cmd(self, cmd: str, timeout: float = 60.0, **params) -> dict:
-        """Send a command to the extension and return the response."""
+        """Send a command to the extension and return the response.
+
+        If the extension WebSocket is dead (Chrome MV3 service-worker suspension
+        is the usual cause), wait up to 30s for a reconnect before raising. This
+        prevents the loop-of-failures pattern where one drop nukes 10 follows
+        in <1 second because every iteration raises ConnectionError instantly.
+        """
         if cmd in self._SLOW_COMMANDS and timeout <= 60.0:
             timeout = 180.0
-        result = await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
+        try:
+            result = await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
+        except ConnectionError:
+            self.log("[Conn] Extension disconnected — waiting up to 30s for reconnect...")
+            ok = await manager.wait_until_connected(self.account_id, timeout=30.0)
+            if not ok:
+                raise
+            self.log("[Conn] Extension reconnected — retrying command.")
+            result = await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
         if result.get("status") == "error":
             raise RuntimeError(f"Extension error [{cmd}]: {result.get('error', 'unknown')}")
         return result
@@ -295,14 +309,24 @@ class Orchestrator:
                 resp = await self._cmd("follow_user", handle=handle)
                 if resp.get("status") != "ok":
                     self.log(f"[Follow] Skipped @{handle}: {resp.get('error', resp.get('status', 'unknown'))}")
+                    await self._organic_pause(short=True)
                     continue
                 self._record_action("follows")
                 self.log(f"[Follow] Followed @{handle}.")
                 last_follows.append(handle)
                 followed += 1
                 await self._organic_pause(short=True)
+            except ConnectionError as e:
+                # _cmd already waited for reconnect once and still failed.
+                # Abort the rest of the batch so we don't burn every candidate
+                # with the same error in <1 second.
+                self.log(f"[Follow] Aborting batch — extension still disconnected: {e}")
+                break
             except Exception as e:
                 self.log(f"[Follow] Error following @{handle}: {e}")
+                # Pause even on failure so we don't hammer the loop on a
+                # repeating transient error (rate limit, overlay, etc.).
+                await self._organic_pause(short=True)
         self.state["last_follows"] = last_follows[-100:]
         self.log(f"[Follow] Followed {followed}/{target_follows} accounts.")
 

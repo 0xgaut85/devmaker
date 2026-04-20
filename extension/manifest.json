@@ -3,7 +3,7 @@
   "name": "DevMaker",
   "version": "2.0.0",
   "description": "Browser automation bridge for DevMaker",
-  "permissions": ["activeTab", "storage", "tabs"],
+  "permissions": ["activeTab", "storage", "tabs", "alarms"],
   "host_permissions": ["*://x.com/*", "*://twitter.com/*", "*://pbs.twimg.com/*", "*://*.railway.app/*", "*://localhost/*"],
   "background": {
     "service_worker": "background.js"

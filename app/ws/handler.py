@@ -56,9 +56,25 @@ async def extension_ws(ws: WebSocket, account_id: str):
     await manager.connect(account_id, ws)
     await _add_log(account_id, "Extension connected")
 
+    # Server-side liveness: if we don't hear from the extension for 90s,
+    # consider the socket dead and disconnect. This catches the case where the
+    # MV3 service worker is suspended (TCP keepalive can take minutes to fire).
+    async def watchdog():
+        while True:
+            await asyncio.sleep(90)
+            if (asyncio.get_event_loop().time() - last_recv[0]) > 90:
+                try:
+                    await ws.close(code=1001, reason="idle timeout")
+                except Exception:
+                    pass
+                return
+    last_recv = [asyncio.get_event_loop().time()]
+    watchdog_task = asyncio.create_task(watchdog())
+
     try:
         while True:
             data = await ws.receive_json()
+            last_recv[0] = asyncio.get_event_loop().time()
             req_id = data.get("req_id")
             if req_id:
                 manager.resolve(req_id, data)
@@ -71,6 +87,8 @@ async def extension_ws(ws: WebSocket, account_id: str):
         logger.exception(f"Extension WS error for {account_id}")
         manager.disconnect(account_id)
         await _add_log(account_id, f"Extension error: {e}", level="error")
+    finally:
+        watchdog_task.cancel()
 
 
 @router.websocket("/ws/logs/{account_id}")
