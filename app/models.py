@@ -51,6 +51,8 @@ class Config(Base):
     voice_description = Column(Text, default="")
     bad_examples = Column(Text, default="")
     good_examples = Column(Text, default="")
+    dev_do = Column(Text, default="")
+    dev_dont = Column(Text, default="")
 
     # Topics
     topics = Column(JSON, default=dict)
@@ -90,7 +92,16 @@ class Config(Base):
     use_vision_image_check = Column(Boolean, default=False)
     position_memory_enabled = Column(Boolean, default=True)
 
-    # Daily caps
+    # Sequence composition (per-sequence, exact counts)
+    seq_text_tweets = Column(Integer, default=1)
+    seq_rephrase_tweets = Column(Integer, default=1)
+    seq_comments = Column(Integer, default=4)
+    seq_qrts = Column(Integer, default=1)
+    seq_rts = Column(Integer, default=1)
+    seq_follows = Column(Integer, default=2)
+    seq_threads = Column(Integer, default=0)
+
+    # Daily caps (derived from seq_* * sequences/day on write; runtime ceiling only)
     daily_max_tweets = Column(Integer, default=8)
     daily_max_comments = Column(Integer, default=25)
     daily_max_likes = Column(Integer, default=50)

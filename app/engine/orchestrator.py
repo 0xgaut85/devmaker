@@ -258,8 +258,11 @@ class Orchestrator:
 
     # -- Follow helper --
 
-    async def _do_follows(self, post_pool: list[dict]):
-        target_follows = random.randint(7, 8)
+    async def _do_follows(self, post_pool: list[dict], count: int | None = None):
+        # When called from the per-action loop, the planner schedules one
+        # `follow` action per follow the user wants, so the default is 1.
+        # Legacy callers that omit `count` get a small batch.
+        target_follows = count if count is not None else random.randint(7, 8)
         followed = 0
         last_follows = self.state.get("last_follows", [])
 
@@ -594,27 +597,36 @@ class Orchestrator:
                     out.append(p)
                 return out
 
+            # Build the action list deterministically from the user's
+            # Sequence Composition panel. No more randint/0.2-roll/thread-every-N.
             actions: list[str] = []
-            if self._can_act("tweets"):
-                actions.append("tweet")
-            if self._can_act("qrts"):
-                actions.append("qrt")
-            if random.random() > 0.2 and self._can_act("rts"):
-                actions.append("rt")
-            num_comments = random.randint(3, 5)
-            for _ in range(num_comments):
-                if self._can_act("comments"):
-                    actions.append("comment")
-            actions.append("follow")
-            if self._should_post_thread() and self._can_act("tweets"):
-                actions.append("thread")
+            actions += ["tweet_text"]     * int(self.cfg.get("seq_text_tweets", 1))
+            actions += ["tweet_rephrase"] * int(self.cfg.get("seq_rephrase_tweets", 1))
+            actions += ["qrt"]            * int(self.cfg.get("seq_qrts", 1))
+            actions += ["rt"]             * int(self.cfg.get("seq_rts", 1))
+            actions += ["comment"]        * int(self.cfg.get("seq_comments", 4))
+            actions += ["follow"]         * int(self.cfg.get("seq_follows", 2))
+            actions += ["thread"]         * int(self.cfg.get("seq_threads", 0))
 
             random.shuffle(actions)
             comment_idx = 0
+            self.log(
+                f"[Plan] {len(actions)} actions: "
+                f"{actions.count('tweet_text')} text, "
+                f"{actions.count('tweet_rephrase')} rephrase, "
+                f"{actions.count('comment')} comments, "
+                f"{actions.count('qrt')} qrts, "
+                f"{actions.count('rt')} rts, "
+                f"{actions.count('follow')} follows, "
+                f"{actions.count('thread')} threads."
+            )
 
             # Caps that the action being run depends on. follow/comment branches
             # already re-check internally.
-            _CAP_FOR_ACTION = {"tweet": "tweets", "qrt": "qrts", "rt": "rts", "thread": "tweets"}
+            _CAP_FOR_ACTION = {
+                "tweet_text": "tweets", "tweet_rephrase": "tweets",
+                "qrt": "qrts", "rt": "rts", "thread": "tweets",
+            }
 
             for action in actions:
                 if self._cancelled:
@@ -627,7 +639,8 @@ class Orchestrator:
                     self.log(f"[{action.upper()}] Skipped — daily {cap_key} cap reached.")
                     continue
 
-                if action == "follow":
+                # tweet_text and follow do not need a post from the pool.
+                if action in ("follow", "tweet_text"):
                     post = None
                 else:
                     available = _available()
@@ -638,7 +651,40 @@ class Orchestrator:
                     # no per-action re-filter or re-classification needed.
                     post = available[0]
 
-                if action == "tweet":
+                if action == "tweet_text":
+                    # Original, from-scratch tweet — no source post, no media.
+                    tweet_topic = self._next_topic(enabled)
+                    self.log(f"[TweetText] Original post on topic={tweet_topic}")
+                    if self._cancelled:
+                        return False
+                    tweet_text = await self._generate_with_dedup(
+                        generate_tweet, cfg=self.cfg,
+                        format_key=format_key,
+                        # Pass topic name so the LLM has a subject to write about
+                        # without grounding in someone else's post text.
+                        original_tweet=tweet_topic,
+                        length_tier=LENGTH_FOR_FORMAT.get(format_key, "MEDIUM"),
+                        enabled_topics=enabled,
+                    )
+                    if not tweet_text:
+                        self.log("[TweetText] Skipped — content generation failed.")
+                    elif self._cancelled:
+                        return False
+                    else:
+                        self.log(f"[TweetText] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
+                        try:
+                            await self._cmd("post_tweet", text=tweet_text, image_urls=[])
+                            self.log("[TweetText] Posted.")
+                            self._record_action("tweets")
+                            self._record_posted_text(tweet_text)
+                            self._record_position_from(tweet_text)
+                            self.state["last_topic_tweet"] = tweet_topic
+                            await self._persist_now()
+                        except Exception as e:
+                            self.log(f"[TweetText] Failed: {e}")
+                            await self._dismiss_compose_safe()
+
+                elif action == "tweet_rephrase":
                     tweet_topic = self._next_topic(enabled)
                     topic_post = self._pick_post(
                         available, tweet_topic, exclude_handles=list(used_handles)
@@ -646,7 +692,7 @@ class Orchestrator:
                     src_url = topic_post.get("url", "")
                     src_handle = topic_post.get("handle", "")
                     actual_topic = topic_post.get("_topic", tweet_topic)
-                    self.log(f"[Tweet] From @{src_handle} ({topic_post.get('likes', 0)} likes) | topic={actual_topic}")
+                    self.log(f"[TweetRephrase] From @{src_handle} ({topic_post.get('likes', 0)} likes) | topic={actual_topic}")
                     if self._cancelled:
                         return False
                     tweet_text = await self._generate_with_dedup(
@@ -656,17 +702,17 @@ class Orchestrator:
                         enabled_topics=enabled,
                     )
                     if not tweet_text:
-                        self.log("[Tweet] Skipped — content generation failed.")
+                        self.log("[TweetRephrase] Skipped — content generation failed.")
                     elif self._cancelled:
                         return False
                     else:
-                        self.log(f"[Tweet] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
+                        self.log(f"[TweetRephrase] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
                         image_urls = await self._filter_images_with_vision(
                             topic_post.get("image_urls", []) or [], tweet_text,
                         )
                         try:
                             await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls)
-                            self.log("[Tweet] Posted.")
+                            self.log("[TweetRephrase] Posted.")
                             # Atomic state update — only after verified post.
                             used_urls.add(src_url)
                             if src_handle:
@@ -680,7 +726,7 @@ class Orchestrator:
                             self.state["last_topic_tweet"] = actual_topic
                             await self._persist_now()
                         except Exception as e:
-                            self.log(f"[Tweet] Failed: {e}")
+                            self.log(f"[TweetRephrase] Failed: {e}")
                             await self._dismiss_compose_safe()
 
                 elif action == "qrt":
@@ -791,7 +837,9 @@ class Orchestrator:
                     comment_idx += 1
 
                 elif action == "follow":
-                    await self._do_follows(post_pool)
+                    # One follow per scheduled follow action — the planner
+                    # already queued seq_follows of these.
+                    await self._do_follows(post_pool, count=1)
                     await self._persist_now()
 
                 elif action == "thread":

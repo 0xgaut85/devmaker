@@ -121,6 +121,8 @@ class Config:
     voice_description: str = ""
     bad_examples: str = ""
     good_examples: str = ""
+    dev_do: str = ""
+    dev_dont: str = ""
 
     # Dev Topics
     topics: dict = field(default_factory=lambda: {t: True for t in DEFAULT_TOPICS})
@@ -160,12 +162,22 @@ class Config:
     use_vision_image_check: bool = False
     position_memory_enabled: bool = True
 
-    # Daily caps
+    # Sequence composition (per-sequence, exact counts)
+    seq_text_tweets: int = 1
+    seq_rephrase_tweets: int = 1
+    seq_comments: int = 4
+    seq_qrts: int = 1
+    seq_rts: int = 1
+    seq_follows: int = 2
+    seq_threads: int = 0
+
+    # Daily caps (derived from seq_* * sequences/day)
     daily_max_tweets: int = 8
     daily_max_comments: int = 25
     daily_max_likes: int = 50
     daily_max_follows: int = 10
     daily_max_qrts: int = 5
+    daily_max_rts: int = 10
 
     # Active hours
     active_hours_enabled: bool = False

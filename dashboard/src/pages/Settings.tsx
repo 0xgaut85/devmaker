@@ -65,8 +65,10 @@ export default function Settings() {
           <Field label="Anthropic Model" value={config.anthropic_model} onChange={(v) => update("anthropic_model", v)} />
         </Section>
 
-        <Section title="Voice">
+        <Section title="Voice" subtitle="Voice + Don't are enforced after generation. 'no emojis at all', 'no hashtags', etc. become hard rules.">
           <TextArea label="Voice Description" value={config.voice_description} onChange={(v) => update("voice_description", v)} />
+          <TextArea label="Do" value={config.dev_do} onChange={(v) => update("dev_do", v)} />
+          <TextArea label="Don't" value={config.dev_dont} onChange={(v) => update("dev_dont", v)} />
           <TextArea label="Bad Examples" value={config.bad_examples} onChange={(v) => update("bad_examples", v)} />
           <TextArea label="Good Examples" value={config.good_examples} onChange={(v) => update("good_examples", v)} />
         </Section>
@@ -132,13 +134,15 @@ export default function Settings() {
           <Toggle label="Position Memory" value={config.position_memory_enabled} onChange={(v) => update("position_memory_enabled", v)} />
         </Section>
 
-        <Section title="Daily Caps">
-          <Number label="Tweets" value={config.daily_max_tweets} onChange={(v) => update("daily_max_tweets", v)} />
-          <Number label="Comments" value={config.daily_max_comments} onChange={(v) => update("daily_max_comments", v)} />
-          <Number label="Likes" value={config.daily_max_likes} onChange={(v) => update("daily_max_likes", v)} />
-          <Number label="Follows" value={config.daily_max_follows} onChange={(v) => update("daily_max_follows", v)} />
-          <Number label="QRTs" value={config.daily_max_qrts} onChange={(v) => update("daily_max_qrts", v)} />
-          <Number label="RTs" value={config.daily_max_rts} onChange={(v) => update("daily_max_rts", v)} />
+        <Section title="Sequence Composition" subtitle="Exact actions per sequence. Daily totals derive from these.">
+          <Number label="Original tweets (text)" value={config.seq_text_tweets} onChange={(v) => update("seq_text_tweets", v)} />
+          <Number label="Rephrased tweets" value={config.seq_rephrase_tweets} onChange={(v) => update("seq_rephrase_tweets", v)} />
+          <Number label="Comments" value={config.seq_comments} onChange={(v) => update("seq_comments", v)} />
+          <Number label="Quote retweets" value={config.seq_qrts} onChange={(v) => update("seq_qrts", v)} />
+          <Number label="Retweets" value={config.seq_rts} onChange={(v) => update("seq_rts", v)} />
+          <Number label="Follows" value={config.seq_follows} onChange={(v) => update("seq_follows", v)} />
+          <Number label="Threads" value={config.seq_threads} onChange={(v) => update("seq_threads", v)} />
+          <DerivedTotals config={config} />
         </Section>
 
         <Section title="Active Hours">
@@ -152,7 +156,6 @@ export default function Settings() {
           <Number label="Action Delay (s)" value={config.action_delay_seconds} onChange={(v) => update("action_delay_seconds", v)} />
           <Number label="Sequence Delay (min)" value={config.sequence_delay_minutes} onChange={(v) => update("sequence_delay_minutes", v)} />
           <Number label="Min Engagement Likes" value={config.min_engagement_likes} onChange={(v) => update("min_engagement_likes", v)} />
-          <Number label="Thread Every N Sequences" value={config.thread_every_n_sequences} onChange={(v) => update("thread_every_n_sequences", v)} />
         </Section>
       </div>
 
@@ -170,10 +173,12 @@ export default function Settings() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5">
-      <h3 className="text-sm font-medium text-white mb-4">{title}</h3>
+      <h3 className="text-sm font-medium text-white mb-1">{title}</h3>
+      {subtitle && <p className="text-xs text-neutral-500 mb-4">{subtitle}</p>}
+      {!subtitle && <div className="mb-1" />}
       <div className="space-y-3">{children}</div>
     </div>
   );
@@ -232,6 +237,28 @@ function Select({ label, value, onChange, options }: { label: string; value: str
         className="bg-neutral-800 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-white outline-none focus:border-neutral-500">
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
       </select>
+    </div>
+  );
+}
+
+function DerivedTotals({ config }: { config: any }) {
+  // Read-only summary so the user can see what their per-sequence numbers
+  // mean for the day. Daily caps shown here are the runtime safety ceiling
+  // computed by the backend.
+  const perSeq =
+    (config.seq_text_tweets ?? 0) +
+    (config.seq_rephrase_tweets ?? 0) +
+    (config.seq_qrts ?? 0) +
+    (config.seq_rts ?? 0) +
+    (config.seq_comments ?? 0) +
+    (config.seq_follows ?? 0) +
+    (config.seq_threads ?? 0);
+  return (
+    <div className="mt-2 pt-3 border-t border-neutral-800 text-[11px] text-neutral-500 space-y-0.5">
+      <div>Per sequence: <span className="text-neutral-300">{perSeq} actions</span></div>
+      <div>
+        Daily ceiling: {config.daily_max_tweets ?? 0} tweets · {config.daily_max_comments ?? 0} comments · {config.daily_max_qrts ?? 0} qrts · {config.daily_max_rts ?? 0} rts · {config.daily_max_follows ?? 0} follows
+      </div>
     </div>
   );
 }
