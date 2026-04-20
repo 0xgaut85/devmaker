@@ -220,7 +220,7 @@ function Number({ label, value, onChange }: { label: string; value: number; onCh
             return;
           }
           const parsed = parseInt(raw, 10);
-          if (Number.isNaN(parsed)) return;
+          if (isNaN(parsed)) return;
           onChange(parsed < 0 ? 0 : parsed);
         }}
         className="w-24 bg-neutral-800 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-white outline-none focus:border-neutral-500 text-center"
