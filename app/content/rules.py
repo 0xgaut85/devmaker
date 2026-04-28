@@ -80,19 +80,38 @@ BANNED_OPENERS = [
     "this right here",
 ]
 
+# 22 dev tweet formats. Each one has a distinct semantic angle, length, and
+# visual structure (see prompts._FORMAT_STRUCTURE_WEIGHTS). Critical rule for
+# new formats: do NOT include literal anchor phrases in the desc (e.g. "Hot
+# take:", "Pro tip:", "Unpopular opinion:") — the LLM treats them as required
+# openers and you end up with 4 identical-looking tweets in a row. Use
+# *describe-the-shape* language instead.
 FORMAT_CATALOG = {
-    "A": {"name": "Short punch", "desc": "1-2 sentences, <80 chars. Punchy one-liner."},
-    "B": {"name": "Numbered list", "desc": "3 things worth knowing about this topic. Use \\n\\n between items."},
+    # --- Original 12 (A-L) -------------------------------------------------
+    "A": {"name": "Short punch", "desc": "1-2 sentences, under 80 chars. Punchy one-liner with a real opinion."},
+    "B": {"name": "Numbered list", "desc": "3 things worth knowing about this topic. Each item on its own short line."},
     "C": {"name": "Observation", "desc": "A sharp observation about a trend or pattern. ~200 chars with setup + insight."},
-    "D": {"name": "Question hook", "desc": "Start with a provocative question, then give your take."},
-    "E": {"name": "Contrarian opener", "desc": "Lead with a counter-consensus opinion (do NOT literally write 'Hot take:' as the opener), then back it up with one or two specifics."},
+    "D": {"name": "Question hook", "desc": "Open with a provocative question, then give your take in 1-2 sentences."},
+    "E": {"name": "Contrarian opener", "desc": "Lead with a counter-consensus opinion. Back it up with one or two specifics. Do NOT literally write 'Hot take:' or 'Unpopular opinion:'."},
     "F": {"name": "Long reflection", "desc": "400+ chars, 3-4 distinct paragraphs. Deep thinking about the topic."},
-    "G": {"name": "Bullet list with intro", "desc": "Intro sentence, then bullet points with \\n\\n- format."},
-    "H": {"name": "One-liner mic drop", "desc": "Single devastating sentence. That's it."},
-    "I": {"name": "Comparison / X vs Y", "desc": "Compare two tools, approaches, or ideas. Why one wins over the other."},
-    "J": {"name": "Practical tip", "desc": "A useful tip about a tool or workflow. Quick and actionable."},
-    "K": {"name": "Hot take on a tool", "desc": "An opinion about a popular tool. What's overrated, underrated, or misunderstood."},
+    "G": {"name": "Bullet list with intro", "desc": "Intro sentence, then 2-4 dash-prefixed bullets. Each bullet a short claim."},
+    "H": {"name": "One-liner mic drop", "desc": "Single devastating sentence. That's it. No setup, no follow-up."},
+    "I": {"name": "Comparison / X vs Y", "desc": "Compare two tools, approaches, or ideas. Concrete reason one wins over the other."},
+    "J": {"name": "Practical tip", "desc": "A useful tip about a tool or workflow. Quick, specific, actionable."},
+    "K": {"name": "Hot take on a tool", "desc": "An opinion about a popular tool. What's overrated, underrated, or misunderstood. Do NOT literally write 'Hot take:' as the opener."},
     "L": {"name": "Industry pattern", "desc": "A pattern you've noticed in the industry. What's changing and why it matters."},
+
+    # --- New 10 (M-V) for diversity ----------------------------------------
+    "M": {"name": "Conditional rule", "desc": "An if-then style rule about the topic, expressed naturally. Do NOT literally start with 'If you'. Phrase the condition and the consequence as one connected thought."},
+    "N": {"name": "Generational shift", "desc": "How the topic has changed over the last few years. Concrete before/after detail. Avoid 'Back in my day' clichés."},
+    "O": {"name": "Stop-doing prescription", "desc": "Tell people what to stop or start doing about the topic. Specific behaviour, not vague advice. Do NOT literally start with 'Stop' or 'Start' as the first word every time."},
+    "P": {"name": "Definition reframe", "desc": "Redefine a common term in your own words and show why the standard definition misses something."},
+    "Q": {"name": "Open question", "desc": "A single thought-provoking question with NO answer attached. Phrased to invite real replies, not rhetorical."},
+    "R": {"name": "Counter-narrative", "desc": "Challenge a common belief about the topic with a concrete counter-example. Do NOT use anchor words like 'Hot take:', 'Unpopular opinion:', 'Real talk:'."},
+    "S": {"name": "Confession", "desc": "Admit a mistake, struggle, or thing you got wrong about the topic. First-person, low-ego, ends with what you learned. NO fake stories — keep it to opinions or stances you held that turned out wrong."},
+    "T": {"name": "Recommendation", "desc": "Recommend a specific tool, approach, or pattern for a clear use case. One sentence on what, one on why."},
+    "U": {"name": "Wordplay / wit", "desc": "A short witty observation, double meaning, or pun about the topic. Funny in 1-2 lines, no setup-punchline structure unless it really lands."},
+    "V": {"name": "Metaphor / analogy", "desc": "Explain the topic using a non-tech analogy (cooking, sports, music, etc.). 2-3 sentences linking the analogy back to the actual point."},
 }
 
 FORMAT_ORDER = list(FORMAT_CATALOG.keys())
@@ -113,6 +132,16 @@ LENGTH_FOR_FORMAT: dict[str, str] = {
     "J": "SHORT",   # Practical tip
     "K": "MEDIUM",  # Hot take on a tool
     "L": "MEDIUM",  # Industry pattern
+    "M": "MEDIUM",  # Conditional rule
+    "N": "MEDIUM",  # Generational shift
+    "O": "SHORT",   # Stop-doing prescription
+    "P": "MEDIUM",  # Definition reframe
+    "Q": "SHORT",   # Open question
+    "R": "MEDIUM",  # Counter-narrative
+    "S": "MEDIUM",  # Confession
+    "T": "SHORT",   # Recommendation
+    "U": "SHORT",   # Wordplay / wit
+    "V": "LONG",    # Metaphor / analogy
 }
 
 DEGEN_FORMAT_CATALOG = {

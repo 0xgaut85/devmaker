@@ -115,7 +115,105 @@ def _next_in(order: list[str], current: str) -> str:
 
 
 def next_format(state: dict) -> str:
+    """Legacy sequential rotation. Kept for back-compat; new code should use
+    :func:`pick_diverse_format`."""
     return _next_in(FORMAT_ORDER, state.get("last_format", ""))
+
+
+# How many of the most recently used dev formats to exclude from the next
+# pick. Tunable: too high and we starve interesting formats; too low and the
+# user sees the same "Hot take on a tool" three sequences in a row. With 22
+# formats, 5 keeps a healthy rotation pool of 17.
+_RECENT_FORMATS_AVOID = 5
+_RECENT_FORMATS_CAP = 8
+
+# Personality-driven boost factors. Multiplied into the base weight (1.0 for
+# every format) when the corresponding slider is in the "high" or "low"
+# range. Conservative (1.5x-2x) so we still get diversity, just tilted.
+_PERSONALITY_BOOSTS: dict[str, dict[str, float]] = {
+    # high controversy -> contrarian / counter-narrative / hot-take formats
+    "personality_controversy_high": {"E": 2.0, "K": 1.7, "R": 2.0, "S": 1.3},
+    # high humor -> wordplay, setup-punchline, mic drop
+    "personality_humor_high": {"U": 2.5, "H": 1.8, "T": 1.3},
+    # high brevity -> short formats
+    "personality_brevity_high": {"A": 2.0, "H": 1.8, "J": 1.5, "Q": 1.5, "T": 1.5, "U": 1.5},
+    # low brevity (verbose) -> long formats
+    "personality_brevity_low": {"F": 2.0, "N": 1.5, "V": 1.7, "S": 1.3},
+    # high intellect -> long-reflection, metaphor, definition
+    "personality_intellect_high": {"F": 1.8, "V": 1.8, "P": 1.5, "L": 1.4, "N": 1.3},
+    # high warmth -> question hook, recommendation, confession
+    "personality_warmth_high": {"D": 1.5, "T": 1.5, "S": 1.5, "Q": 1.4},
+    # high confidence -> contrarian, mic drop, hot take
+    "personality_confidence_high": {"E": 1.5, "H": 1.7, "K": 1.4, "R": 1.5},
+    # high sarcasm -> wordplay, hot take, counter-narrative
+    "personality_sarcasm_high": {"U": 2.0, "K": 1.5, "R": 1.5, "H": 1.4},
+}
+
+
+def _personality_weights(cfg: dict) -> dict[str, float]:
+    """Compute a per-format multiplier dict from personality slider values.
+
+    Sliders are 0-10. We treat >= 7 as "high" and <= 3 as "low" for
+    boost purposes. Returns ``{format_key: multiplier}`` with default 1.0.
+    """
+    weights: dict[str, float] = {fk: 1.0 for fk in FORMAT_ORDER}
+    if not cfg:
+        return weights
+    for slider, table in (
+        ("personality_controversy", "personality_controversy_high"),
+        ("personality_humor", "personality_humor_high"),
+        ("personality_intellect", "personality_intellect_high"),
+        ("personality_warmth", "personality_warmth_high"),
+        ("personality_confidence", "personality_confidence_high"),
+        ("personality_sarcasm", "personality_sarcasm_high"),
+    ):
+        if int(cfg.get(slider, 5) or 0) >= 7:
+            for fk, boost in _PERSONALITY_BOOSTS[table].items():
+                if fk in weights:
+                    weights[fk] *= boost
+    brev = int(cfg.get("personality_brevity", 5) or 0)
+    if brev >= 7:
+        for fk, boost in _PERSONALITY_BOOSTS["personality_brevity_high"].items():
+            if fk in weights:
+                weights[fk] *= boost
+    elif brev <= 3:
+        for fk, boost in _PERSONALITY_BOOSTS["personality_brevity_low"].items():
+            if fk in weights:
+                weights[fk] *= boost
+    return weights
+
+
+def pick_diverse_format(cfg: dict, state: dict) -> str:
+    """Pick the next dev tweet format with three layers of diversity:
+
+    1. EXCLUDE the last ``_RECENT_FORMATS_AVOID`` formats from the candidate
+       pool so we never repeat the same look in a short window. Falls back to
+       the full pool only when every format is in the recent list.
+    2. WEIGHT the remaining candidates by personality sliders (high
+       controversy -> contrarian formats get boosted, high humor -> wordplay
+       boosted, etc.). Defaults to a uniform pick when no personality is set.
+    3. UPDATE ``state['recent_formats']`` (capped) and ``state['last_format']``
+       so the next call respects this pick. Persistence is handled by the
+       caller via :func:`Orchestrator._persist_now`.
+
+    Note: ``state['recent_formats']`` may not exist on accounts created before
+    the column was added — we handle that by initialising from
+    ``state['last_format']`` when missing.
+    """
+    recent: list[str] = list(state.get("recent_formats") or [])
+    if not recent and state.get("last_format"):
+        recent = [state["last_format"]]
+    avoid = set(recent[-_RECENT_FORMATS_AVOID:])
+
+    candidates = [fk for fk in FORMAT_ORDER if fk not in avoid] or list(FORMAT_ORDER)
+    pweights = _personality_weights(cfg)
+    weights = [pweights.get(fk, 1.0) for fk in candidates]
+    pick = random.choices(candidates, weights=weights, k=1)[0]
+
+    recent.append(pick)
+    state["recent_formats"] = recent[-_RECENT_FORMATS_CAP:]
+    state["last_format"] = pick
+    return pick
 
 
 def next_degen_format(state: dict) -> str:
@@ -213,7 +311,8 @@ def use_following(cfg: dict) -> bool:
 __all__ = [
     "daily_caps_for", "today_counts", "can_act", "record_action", "all_caps_reached",
     "recent_posts", "remember_posted_text", "remember_source_url", "remember_follow",
-    "next_format", "next_degen_format", "next_thread_format", "next_comment_rotation",
+    "next_format", "pick_diverse_format",
+    "next_degen_format", "next_thread_format", "next_comment_rotation",
     "tone_for", "topic_weight", "next_topic", "record_position_in_state",
     "is_active_hours", "active_api_key", "enabled_topics", "enabled_degen_topics",
     "use_following",

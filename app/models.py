@@ -142,6 +142,11 @@ class State(Base):
     # Dev mode rotation
     sequence_number = Column(Integer, default=0)
     last_format = Column(String, default="")
+    # Rolling window of the last few format keys used; the picker excludes
+    # this set so the user never sees the same format two sequences in a row.
+    # Optional column — old DBs without it gracefully degrade to one-step
+    # avoidance via last_format alone.
+    recent_formats = Column(JSON, default=list)
     last_topic_tweet = Column(String, default="")
     last_topic_qrt = Column(String, default="")
     last_topic_rt = Column(String, default="")

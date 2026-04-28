@@ -44,24 +44,50 @@ _STRUCTURES: dict[str, str] = {
         "STRUCTURE: 3+ paragraphs separated by blank lines. "
         "Each paragraph is a coherent thought unit (NOT a single sentence). "
         "Sentences inside a paragraph flow together with periods and commas, not line breaks.",
+    "lead_plus_bullets":
+        "STRUCTURE: One short lead sentence, blank line, then 2-4 bullet items. "
+        "Each bullet starts with '- ' (dash + space) and is a short claim or example. "
+        "No numbering, no sub-bullets.",
+    "numbered_list":
+        "STRUCTURE: A numbered list using '1. ', '2. ', '3. ' at the start of each item. "
+        "Each item on its own line. Optional one-line intro before the list.",
+    "question_then_answer":
+        "STRUCTURE: One sharp question on the first line, blank line, then a 1-2 sentence answer paragraph. "
+        "The question must end with '?'.",
+    "setup_punchline":
+        "STRUCTURE: One setup line, blank line, then ONE punchline. "
+        "The punchline is shorter than the setup and lands the joke or insight without explanation.",
 }
 
 # Per-format weights. A format with strong inherent layout (numbered list,
 # one-liner) pins to one structure; flexible formats spread across several so
 # the timeline doesn't read as a template.
 _FORMAT_STRUCTURE_WEIGHTS: dict[str, dict[str, float]] = {
-    "A": {"single_line": 0.9, "flowing_paragraph": 0.1},          # Short punch
-    "B": {"line_broken": 0.85, "two_paragraphs": 0.15},           # Numbered list
-    "C": {"flowing_paragraph": 0.45, "two_paragraphs": 0.30, "single_line": 0.15, "line_broken": 0.10},
-    "D": {"flowing_paragraph": 0.40, "two_paragraphs": 0.30, "single_line": 0.20, "line_broken": 0.10},
-    "E": {"flowing_paragraph": 0.40, "two_paragraphs": 0.30, "single_line": 0.20, "line_broken": 0.10},
-    "F": {"multi_paragraph": 0.55, "two_paragraphs": 0.40, "line_broken": 0.05},  # Long reflection
-    "G": {"line_broken": 0.65, "two_paragraphs": 0.35},           # Bullet list with intro
-    "H": {"single_line": 1.0},                                    # One-liner mic drop
-    "I": {"two_paragraphs": 0.40, "flowing_paragraph": 0.40, "line_broken": 0.20},  # Comparison
-    "J": {"single_line": 0.50, "flowing_paragraph": 0.40, "line_broken": 0.10},     # Practical tip
-    "K": {"flowing_paragraph": 0.40, "two_paragraphs": 0.30, "single_line": 0.20, "line_broken": 0.10},
-    "L": {"flowing_paragraph": 0.40, "two_paragraphs": 0.40, "line_broken": 0.20},
+    # --- Original 12 -------------------------------------------------------
+    "A": {"single_line": 0.85, "flowing_paragraph": 0.10, "setup_punchline": 0.05},  # Short punch
+    "B": {"numbered_list": 0.55, "line_broken": 0.30, "lead_plus_bullets": 0.15},    # Numbered list
+    "C": {"flowing_paragraph": 0.35, "two_paragraphs": 0.25, "single_line": 0.15, "line_broken": 0.10, "setup_punchline": 0.10, "question_then_answer": 0.05},
+    "D": {"question_then_answer": 0.40, "flowing_paragraph": 0.25, "two_paragraphs": 0.20, "single_line": 0.15},  # Question hook
+    "E": {"flowing_paragraph": 0.35, "two_paragraphs": 0.30, "single_line": 0.20, "setup_punchline": 0.10, "line_broken": 0.05},
+    "F": {"multi_paragraph": 0.55, "two_paragraphs": 0.35, "lead_plus_bullets": 0.10},  # Long reflection
+    "G": {"lead_plus_bullets": 0.65, "line_broken": 0.20, "two_paragraphs": 0.15},   # Bullet list with intro
+    "H": {"single_line": 1.0},                                                       # One-liner mic drop (pinned)
+    "I": {"two_paragraphs": 0.35, "flowing_paragraph": 0.30, "lead_plus_bullets": 0.20, "line_broken": 0.15},  # Comparison
+    "J": {"single_line": 0.45, "flowing_paragraph": 0.30, "setup_punchline": 0.15, "line_broken": 0.10},        # Practical tip
+    "K": {"flowing_paragraph": 0.35, "two_paragraphs": 0.30, "single_line": 0.20, "setup_punchline": 0.10, "line_broken": 0.05},
+    "L": {"flowing_paragraph": 0.35, "two_paragraphs": 0.35, "line_broken": 0.15, "lead_plus_bullets": 0.15},
+
+    # --- New 10 (M-V) ------------------------------------------------------
+    "M": {"flowing_paragraph": 0.50, "single_line": 0.30, "two_paragraphs": 0.20},   # Conditional rule
+    "N": {"two_paragraphs": 0.45, "flowing_paragraph": 0.35, "multi_paragraph": 0.20},  # Generational shift
+    "O": {"single_line": 0.50, "flowing_paragraph": 0.30, "lead_plus_bullets": 0.20},  # Stop-doing prescription
+    "P": {"flowing_paragraph": 0.45, "two_paragraphs": 0.40, "setup_punchline": 0.15},  # Definition reframe
+    "Q": {"single_line": 1.0},                                                       # Open question (pinned)
+    "R": {"flowing_paragraph": 0.40, "two_paragraphs": 0.30, "setup_punchline": 0.15, "single_line": 0.15},  # Counter-narrative
+    "S": {"flowing_paragraph": 0.40, "two_paragraphs": 0.45, "multi_paragraph": 0.15},  # Confession
+    "T": {"single_line": 0.40, "flowing_paragraph": 0.35, "setup_punchline": 0.25},     # Recommendation
+    "U": {"single_line": 0.65, "setup_punchline": 0.35},                                # Wordplay / wit
+    "V": {"two_paragraphs": 0.45, "multi_paragraph": 0.30, "flowing_paragraph": 0.25},  # Metaphor / analogy
 }
 
 # Degen formats — same idea, sized to match each format's natural shape.

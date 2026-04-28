@@ -132,11 +132,17 @@ async def run_dev_sequence(ctx: SequenceContext) -> bool:
         ctx.log("ERROR: No API key configured.")
         return False
 
-    ctx.format_key = S.next_format(ctx.state)
+    # Personality-aware diverse pick that ALSO excludes the last N formats so
+    # we don't see the same look back-to-back. State (recent_formats,
+    # last_format) is updated in-place by the picker; persistence happens
+    # below via ctx.persist().
+    ctx.format_key = S.pick_diverse_format(ctx.cfg, ctx.state)
     ctx.comment_rotation = S.next_comment_rotation(ctx.state)
     ctx.seq_num = int(ctx.state.get("sequence_number", 0)) + 1
     fmt_name = FORMAT_CATALOG.get(ctx.format_key, {}).get("name", ctx.format_key)
+    recent_fmts = " -> ".join((ctx.state.get("recent_formats") or [])[-5:]) or ctx.format_key
     ctx.log(f"=== DEV SEQUENCE {ctx.seq_num} | Format: {ctx.format_key} ({fmt_name}) ===")
+    ctx.log(f"[Format] recent: {recent_fmts}")
     ctx.log(f"[Budget] today: {_format_budget(ctx)}")
 
     pool = await _scrape_eligible_pool(ctx)

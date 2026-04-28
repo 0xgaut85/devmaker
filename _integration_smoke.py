@@ -24,8 +24,10 @@ from unittest.mock import patch
 
 from app.content.generator import GenerationResult, ThreadResult
 from app.content.prompts import (
-    _STRUCTURES, _structure_block, build_tweet_rephrase_prompt,
+    _FORMAT_STRUCTURE_WEIGHTS, _STRUCTURES, _structure_block,
+    build_tweet_rephrase_prompt,
 )
+from app.content.rules import FORMAT_CATALOG, FORMAT_ORDER, LENGTH_FOR_FORMAT
 from app.content.validator import (
     _opener_fingerprint, has_repeated_opener, validate_and_fix,
 )
@@ -583,6 +585,170 @@ def test_validator_preserves_two_paragraph_structure():
 
 
 # --------------------------------------------------------------------------- #
+#  Test 10 - format catalog completeness                                      #
+# --------------------------------------------------------------------------- #
+
+def test_format_catalog_completeness():
+    print("\n[10] format catalog completeness")
+    _say(
+        "FORMAT_CATALOG has at least 22 formats (was 12)",
+        len(FORMAT_CATALOG) >= 22,
+        f"count={len(FORMAT_CATALOG)}",
+    )
+    missing_length = [fk for fk in FORMAT_CATALOG if fk not in LENGTH_FOR_FORMAT]
+    _say(
+        "every format has a LENGTH_FOR_FORMAT entry",
+        not missing_length,
+        f"missing={missing_length}",
+    )
+    missing_weights = [fk for fk in FORMAT_CATALOG if fk not in _FORMAT_STRUCTURE_WEIGHTS]
+    _say(
+        "every format has a _FORMAT_STRUCTURE_WEIGHTS entry",
+        not missing_weights,
+        f"missing={missing_weights}",
+    )
+    # Every weight set must reference a known structure name.
+    bad_weights: list[str] = []
+    for fk, w in _FORMAT_STRUCTURE_WEIGHTS.items():
+        for s_name in w.keys():
+            if s_name not in _STRUCTURES:
+                bad_weights.append(f"{fk}->{s_name}")
+    _say(
+        "every weight references a defined STRUCTURE",
+        not bad_weights,
+        f"bad={bad_weights}",
+    )
+
+
+# --------------------------------------------------------------------------- #
+#  Test 11 - pick_diverse_format avoids recent + respects personality         #
+# --------------------------------------------------------------------------- #
+
+def test_pick_diverse_format_avoids_recent():
+    print("\n[11] pick_diverse_format diversity")
+    from app.engine.state import pick_diverse_format
+    # Run 30 sequential picks; track how often the new pick is in the
+    # last-5 window. Should be 0 (the picker excludes them entirely).
+    state: dict = {"recent_formats": []}
+    cfg: dict = {}
+    repeats_in_window = 0
+    last5_each_step: list[list[str]] = []
+    for _ in range(30):
+        recent_before = list(state.get("recent_formats", []))[-5:]
+        last5_each_step.append(recent_before)
+        pick = pick_diverse_format(cfg, state)
+        if pick in recent_before:
+            repeats_in_window += 1
+    _say(
+        "picker never repeats a format used in the last 5 picks",
+        repeats_in_window == 0,
+        f"repeats={repeats_in_window}",
+    )
+    distinct = len({p for window in last5_each_step for p in window})
+    _say(
+        "30 picks cover at least 12 distinct formats (true diversity)",
+        distinct >= 12,
+        f"distinct={distinct}",
+    )
+
+
+def test_pick_diverse_format_personality_bias():
+    from app.engine.state import pick_diverse_format
+    # High humor account should produce more wordplay (U) and one-liner
+    # mic drop (H) than a default (humor=5) account.
+    high_humor_cfg = {"personality_humor": 10, "personality_brevity": 5}
+    default_cfg = {"personality_humor": 5, "personality_brevity": 5}
+    n = 500
+
+    high_state: dict = {"recent_formats": []}
+    high_counts: dict[str, int] = {}
+    for _ in range(n):
+        p = pick_diverse_format(high_humor_cfg, high_state)
+        high_counts[p] = high_counts.get(p, 0) + 1
+
+    default_state: dict = {"recent_formats": []}
+    default_counts: dict[str, int] = {}
+    for _ in range(n):
+        p = pick_diverse_format(default_cfg, default_state)
+        default_counts[p] = default_counts.get(p, 0) + 1
+
+    high_humor_picks = high_counts.get("U", 0) + high_counts.get("H", 0)
+    default_humor_picks = default_counts.get("U", 0) + default_counts.get("H", 0)
+    _say(
+        "humor=10 produces strictly more U+H picks than humor=5",
+        high_humor_picks > default_humor_picks,
+        f"high U+H={high_humor_picks}, default U+H={default_humor_picks}",
+    )
+
+
+def test_pick_diverse_format_handles_old_state():
+    # Old DB without recent_formats column: state["recent_formats"] is missing,
+    # but state["last_format"] is set. Picker should still avoid that one.
+    from app.engine.state import pick_diverse_format
+    state = {"last_format": "C"}  # no recent_formats key at all
+    cfg = {}
+    # First pick should not be C (it should be excluded via last_format fallback)
+    seen_c_first_pick = 0
+    for _ in range(50):
+        s = {"last_format": "C"}
+        p = pick_diverse_format(cfg, s)
+        if p == "C":
+            seen_c_first_pick += 1
+    _say(
+        "old-state fallback excludes last_format from first pick",
+        seen_c_first_pick == 0,
+        f"saw C as first pick {seen_c_first_pick} times",
+    )
+
+
+# --------------------------------------------------------------------------- #
+#  Test 12 - new structures resolve via _structure_block                      #
+# --------------------------------------------------------------------------- #
+
+def test_new_structures_can_be_picked():
+    print("\n[12] new structures reachable")
+    # Format G now uses lead_plus_bullets ~65% of the time.
+    seen: set[str] = set()
+    for _ in range(200):
+        block = _structure_block(format_key="G")
+        for name, txt in _STRUCTURES.items():
+            if block == txt:
+                seen.add(name)
+                break
+    _say(
+        "format G can pick lead_plus_bullets",
+        "lead_plus_bullets" in seen,
+        f"seen={seen}",
+    )
+    # Format B now uses numbered_list majority of the time.
+    seen_b: set[str] = set()
+    for _ in range(200):
+        block = _structure_block(format_key="B")
+        for name, txt in _STRUCTURES.items():
+            if block == txt:
+                seen_b.add(name)
+                break
+    _say(
+        "format B can pick numbered_list",
+        "numbered_list" in seen_b,
+        f"seen={seen_b}",
+    )
+    # Format Q (open question) pinned to single_line.
+    seen_q: set[str] = set()
+    for _ in range(50):
+        block = _structure_block(format_key="Q")
+        for name, txt in _STRUCTURES.items():
+            if block == txt:
+                seen_q.add(name)
+                break
+    _say(
+        "format Q pinned to single_line",
+        seen_q == {"single_line"},
+        f"seen={seen_q}",
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Runner                                                                     #
 # --------------------------------------------------------------------------- #
 
@@ -602,6 +768,11 @@ def main() -> int:
     test_structure_block_appears_in_prompt()
     test_validator_does_not_break_flowing_paragraph()
     test_validator_preserves_two_paragraph_structure()
+    test_format_catalog_completeness()
+    test_pick_diverse_format_avoids_recent()
+    test_pick_diverse_format_personality_bias()
+    test_pick_diverse_format_handles_old_state()
+    test_new_structures_can_be_picked()
 
     print(f"\n{'='*60}")
     print(f"  passed: {len(PASS)}")
