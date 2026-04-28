@@ -139,39 +139,6 @@ DEGEN_TOPIC_KEYWORDS = {
     "Regulation / Policy": ["regulation", "sec", "gensler", "congress", "ban", "compliance", "kyc", "cbdc"],
 }
 
-PROJECT_COMMENT_TEMPLATES = [
-    "gm", "gm gm", "gm {project}", "g{project}", "gm gm {project}", "gm from the {project} fam",
-    "this week = big", "massive week ahead", "big things loading", "something's cooking",
-    "you can feel it", "the energy rn is unmatched", "inject this into my veins",
-    "not ready for what's coming", "month's not even over yet", "just getting started", "buckle up",
-    "let's build", "keep building", "builders gonna build", "{project} never stops building",
-    "{project} stays shipping", "ship ship ship", "the team never sleeps", "relentless shipping",
-    "built different fr", "building different", "another day another ship", "devs are cooking",
-    "{project} devs don't miss",
-    "bullish", "so bullish", "so bullish on {project}", "wagmi", "lfg", "lfg {project}",
-    "lets go {project}", "we're so early", "early", "still early", "underrated",
-    "this is it", "this is the one", "massive", "huge", "huge if true",
-    "love this", "love to see it", "love what you're building", "been saying this",
-    "the future", "this is the way", "respect", "based", "absolute chads", "goated team",
-    "W", "big W", "nothing but respect", "top tier",
-    "best community in crypto", "love this community", "proud to be here",
-    "glad to be early", "community keeps winning", "vibes are immaculate",
-    "{project} szn", "{project} season is here", "the {project} ecosystem is thriving",
-    "momentum is real", "can't stop won't stop", "{project} never stops",
-    "every week is a new milestone", "onward and upward",
-]
-
-PROJECT_BANNED_WORDS = [
-    "scam", "rug", "rugged", "ponzi", "fraud", "dead", "dying", "rip",
-    "dump", "dumping", "sell", "selling", "short", "shorting",
-    "better than", "worse than", "competitor", "overvalued", "overpriced",
-    "regulation", "sec", "lawsuit", "sued", "illegal",
-    "hack", "hacked", "exploit", "exploited", "drained",
-    "hate", "trash", "garbage", "sucks", "terrible", "awful", "ngmi", "rekt",
-    "buy", "price", "moon", "100x", "1000x", "nfa", "dyor", "financial advice",
-    "kill", "die", "death",
-]
-
 LENGTH_TIERS = {
     "SHORT": {"min": 1, "max": 100, "desc": "1-2 sentences, punchy"},
     "MEDIUM": {"min": 100, "max": 250, "desc": "3-4 sentences, adds substance"},

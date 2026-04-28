@@ -1,50 +1,61 @@
 """Config get/set endpoints for per-account settings."""
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.auth import verify_api_key
 from app.database import get_db
 from app.models import Config
-from app.api.auth import verify_api_key
 
 router = APIRouter()
 
-# Fields the user can write directly via the dashboard.
-WRITABLE_FIELDS = [
-    "farming_mode", "llm_provider", "openai_api_key", "anthropic_api_key",
+
+WRITABLE_FIELDS = (
+    # Mode
+    "farming_mode",
+    # LLM
+    "llm_provider", "openai_api_key", "anthropic_api_key",
     "openai_model", "anthropic_model",
+    # Voice (dev)
     "voice_description", "bad_examples", "good_examples",
     "dev_do", "dev_dont",
+    # Topics
     "topics", "degen_topics",
-    "project_name", "project_about", "project_do", "project_dont",
-    "project_categories", "project_timeline_comments", "project_timeline_min_likes",
+    # Degen voice
     "degen_voice_description", "degen_do", "degen_dont",
+    # RT farm
     "rt_farm_target_handle", "rt_farm_delay_seconds", "rt_farm_max_scrolls",
+    # Sniper
     "sniper_enabled", "sniper_scan_interval_minutes", "sniper_min_velocity",
     "sniper_max_replies", "sniper_replies_per_scan",
+    # Intelligence
     "use_llm_classification", "use_vision_image_check", "position_memory_enabled",
-    # Sequence composition (per-sequence exact counts; daily caps derive from these)
+    # Sequence composition (per-sequence; daily caps derived from these)
     "seq_text_tweets", "seq_rephrase_tweets", "seq_comments",
     "seq_qrts", "seq_rts", "seq_follows", "seq_threads",
-    "active_hours_enabled", "active_hours_start", "active_hours_end", "active_hours_timezone",
-    "personality_humor", "personality_sarcasm", "personality_confidence", "personality_warmth",
-    "personality_controversy", "personality_intellect", "personality_brevity", "personality_edginess",
-    "use_following_tab",
-    "allow_trading_price_posts",
-    "exclude_political_timeline",
+    # Active hours
+    "active_hours_enabled", "active_hours_start", "active_hours_end",
+    "active_hours_timezone",
+    # Personality sliders
+    "personality_humor", "personality_sarcasm", "personality_confidence",
+    "personality_warmth", "personality_controversy", "personality_intellect",
+    "personality_brevity", "personality_edginess",
+    # Timeline
+    "use_following_tab", "allow_trading_price_posts", "exclude_political_timeline",
+    # Timing
     "action_delay_seconds", "sequence_delay_minutes", "min_engagement_likes",
-]
+)
 
-# Read-only fields the dashboard still wants visible (derived ceilings, etc.).
-DERIVED_FIELDS = [
+DERIVED_FIELDS = (
     "daily_max_tweets", "daily_max_comments", "daily_max_likes",
     "daily_max_follows", "daily_max_qrts", "daily_max_rts",
     "thread_every_n_sequences",
-]
+)
 
 EXPOSED_FIELDS = WRITABLE_FIELDS + DERIVED_FIELDS
+
+VALID_FARMING_MODES = ("dev", "degen", "rt_farm", "sniper")
 
 # Average tweets per thread used when deriving the daily tweet ceiling.
 _THREAD_AVG_LEN = 4
@@ -63,7 +74,7 @@ def _sequences_per_day_estimate(cfg: Config) -> int:
 
 
 def _recompute_daily_caps(cfg: Config) -> None:
-    """Derive the daily_max_* ceiling from the per-sequence composition.
+    """Derive daily_max_* ceilings from the per-sequence composition.
     These are runtime safety nets, not user-visible knobs."""
     seq_per_day = _sequences_per_day_estimate(cfg)
     text_t = int(cfg.seq_text_tweets or 0)
@@ -83,38 +94,46 @@ def _recompute_daily_caps(cfg: Config) -> None:
     # Likes happen organically inside _like_and_bookmark; size the ceiling so
     # comment/QRT-driven likes never trip it.
     cfg.daily_max_likes = max(50, (comments + qrts + rts) * seq_per_day * 2)
-    # Threads are scheduled per-sequence now; keep the legacy field at a value
-    # that makes _should_post_thread() return True every sequence iff the user
-    # asked for >=1 thread.
+    # Threads scheduled per-sequence; legacy field kept so _should_post_thread
+    # returns True every sequence iff the user asked for >=1 thread.
     cfg.thread_every_n_sequences = 1 if threads > 0 else 9999
 
 
 @router.get("/{account_id}")
-async def get_config(account_id: str, db: AsyncSession = Depends(get_db), _=Depends(verify_api_key)):
-    result = await db.execute(select(Config).where(Config.account_id == account_id))
-    cfg = result.scalar_one_or_none()
+async def get_config(
+    account_id: str,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_api_key),
+):
+    cfg = (await db.execute(select(Config).where(Config.account_id == account_id))).scalar_one_or_none()
     if not cfg:
         raise HTTPException(404, "Config not found")
-    # Make sure derived fields reflect the latest seq_* on every read so the
-    # dashboard always shows accurate ceilings even if they were never written.
+    # Refresh derived fields on every read so the dashboard sees accurate caps
+    # even if seq_* were touched from another path.
     _recompute_daily_caps(cfg)
     return {field: getattr(cfg, field) for field in EXPOSED_FIELDS}
 
 
 @router.put("/{account_id}")
-async def update_config(account_id: str, body: dict, db: AsyncSession = Depends(get_db), _=Depends(verify_api_key)):
-    result = await db.execute(select(Config).where(Config.account_id == account_id))
-    cfg = result.scalar_one_or_none()
+async def update_config(
+    account_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_api_key),
+):
+    cfg = (await db.execute(select(Config).where(Config.account_id == account_id))).scalar_one_or_none()
     if not cfg:
         raise HTTPException(404, "Config not found")
 
-    updated = []
+    if "farming_mode" in body and body["farming_mode"] not in VALID_FARMING_MODES:
+        raise HTTPException(400, f"Invalid farming_mode (allowed: {', '.join(VALID_FARMING_MODES)})")
+
+    updated: list[str] = []
     for key, value in body.items():
         if key in WRITABLE_FIELDS and hasattr(cfg, key):
             setattr(cfg, key, value)
             updated.append(key)
 
     _recompute_daily_caps(cfg)
-
     await db.commit()
     return {"updated": updated}

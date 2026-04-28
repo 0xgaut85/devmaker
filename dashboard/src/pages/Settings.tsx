@@ -47,7 +47,7 @@ export default function Settings() {
       <div className="space-y-8">
         <Section title="Mode">
           <Select label="Farming Mode" value={config.farming_mode} onChange={(v) => update("farming_mode", v)}
-            options={["dev", "project", "degen", "rt_farm", "sniper"]} />
+            options={["dev", "degen", "rt_farm", "sniper"]} />
           <Toggle label="Use Following Tab" value={config.use_following_tab ?? true} onChange={(v) => update("use_following_tab", v)} />
           <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Scrape from "Following" instead of "For You". Better for fresh accounts with curated follows.</p>
           <Toggle label="Allow trading / price posts" value={config.allow_trading_price_posts ?? false} onChange={(v) => update("allow_trading_price_posts", v)} />
@@ -87,19 +87,6 @@ export default function Settings() {
         <Section title="Degen Topics">
           <p className="text-xs text-neutral-500 mb-3">Topics for degen farming mode.</p>
           <TopicsPicker value={config.degen_topics || {}} onChange={(v) => update("degen_topics", v)} preset={TOPICS_DEGEN} />
-        </Section>
-
-        <Section title="Project Farming">
-          <Field label="Project Name" value={config.project_name} onChange={(v) => update("project_name", v)} />
-          <TextArea label="About" value={config.project_about} onChange={(v) => update("project_about", v)} />
-          <TextArea label="Do" value={config.project_do} onChange={(v) => update("project_do", v)} />
-          <TextArea label="Don't" value={config.project_dont} onChange={(v) => update("project_dont", v)} />
-          <Number label="Comments per Sequence" value={config.project_timeline_comments} onChange={(v) => update("project_timeline_comments", v)} />
-          <Number label="Min Likes" value={config.project_timeline_min_likes} onChange={(v) => update("project_timeline_min_likes", v)} />
-          <div className="pt-2">
-            <label className="text-xs text-neutral-400 block mb-2">Project Categories</label>
-            <TopicsPicker value={config.project_categories || {}} onChange={(v) => update("project_categories", v)} preset={TOPICS_GENERAL} />
-          </div>
         </Section>
 
         <Section title="RT Farm">

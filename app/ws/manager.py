@@ -49,7 +49,7 @@ class ConnectionManager:
             raise ConnectionError(f"No extension connected for account {account_id}")
 
         req_id = f"{account_id}:{uuid.uuid4().hex[:8]}"
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending[req_id] = future
 
@@ -78,8 +78,9 @@ class ConnectionManager:
         Chrome MV3 service worker being suspended) instead of failing every
         queued action immediately.
         """
-        deadline = asyncio.get_event_loop().time() + max(0.0, timeout)
-        while asyncio.get_event_loop().time() < deadline:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        while loop.time() < deadline:
             if account_id in self._connections:
                 return True
             await asyncio.sleep(0.5)

@@ -1,8 +1,15 @@
 """
 Single place for timeline post eligibility (dev farming).
 
-Spam → trading policy (optional) → per-post category via LLM (or keyword fallback).
-Categories are chosen by the model from the user's enabled topic list, not heuristics.
+Pipeline:
+  raw posts
+    -> drop spam (hard filter, always)
+    -> classify topic + trading flag via LLM (or keyword fallback)
+    -> drop posts whose topic is null
+    -> drop trading/price posts unless allow_trading_price_posts=True
+
+Per-stage drop counts are stamped on the returned list as ``out._drop_stats``
+so the caller can surface diagnostics when the gate empties.
 """
 
 from __future__ import annotations
@@ -24,8 +31,8 @@ SPAM_SUBSTRINGS = [
 ]
 
 # Keyword skip used by the keyword fallback path so it mirrors the LLM
-# political-content rule. We deliberately keep this list short and unambiguous
-# to avoid false positives.
+# political-content rule. Deliberately short and unambiguous to avoid false
+# positives.
 _POLITICAL_SKIP_HINTS = (
     "election", "elections", "ballot", "vote ", " votes",
     "president", "presidential", "white house", "congress",
@@ -66,13 +73,23 @@ def _looks_like_trading_or_price_post(text: str) -> bool:
     return any(p in t for p in _TRADING_PRICE_HINTS)
 
 
-def should_exclude_trading_price(text: str, cfg: dict[str, Any]) -> bool:
-    """True = drop this post in non-degen modes when user did not opt in to trading CT."""
+def _user_allows_trading(cfg: dict[str, Any]) -> bool:
+    """Trading/price posts are first-class in degen mode and opt-in elsewhere."""
     if cfg.get("farming_mode") == "degen":
-        return False
-    if cfg.get("allow_trading_price_posts"):
-        return False
-    return _looks_like_trading_or_price_post(text)
+        return True
+    return bool(cfg.get("allow_trading_price_posts"))
+
+
+class EligiblePosts(list):
+    """List subclass that also carries per-stage drop counts for diagnostics."""
+
+    drop_stats: dict[str, int]
+    sample_llm_outputs: list[str]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.drop_stats = {}
+        self.sample_llm_outputs = []
 
 
 def build_eligible_posts(
@@ -82,65 +99,89 @@ def build_eligible_posts(
     *,
     keyword_map: dict[str, list[str]] | None = None,
     min_topic_score: int = 2,
-) -> list[dict[str, Any]]:
-    """
-    Single gate: spam → trading policy → per-post LLM category (or keyword fallback).
+) -> EligiblePosts:
+    """Filter the timeline pool down to engageable posts.
 
-    With use_llm_classification (default), the LLM analyzes each candidate post and
-    assigns at most one enabled topic, or none. No separate political keyword layer.
+    Order matters: spam is dropped first (cheap and never wanted), then the
+    LLM (or keyword) classifier picks one of the user's enabled topics, then
+    trading/price posts are dropped unless the user opted in. Doing trading
+    AFTER classification lets the LLM make the call, so e.g. a thoughtful
+    market-structure piece tagged 'Crypto' still passes when 'Crypto' is an
+    enabled topic but allow_trading_price_posts is off.
     """
-    # --- fast pre-filters (promo spam + optional trading CT; category = LLM) ---
-    candidates: list[dict[str, Any]] = []
+    out = EligiblePosts()
+    out.drop_stats = {
+        "raw": len(posts),
+        "spam": 0,
+        "no_topic": 0,
+        "trading_blocked": 0,
+        "kept": 0,
+    }
+
+    after_spam: list[dict[str, Any]] = []
     for p in posts:
         if is_spam_post(p):
+            out.drop_stats["spam"] += 1
             continue
-        text = p.get("text") or ""
-        if should_exclude_trading_price(text, cfg):
-            continue
-        candidates.append(p)
+        after_spam.append(p)
 
-    if not candidates:
-        return []
+    if not after_spam:
+        return out
 
-    # --- topic classification ---
     use_llm = cfg.get("use_llm_classification", True)
-    llm_result: dict[str, str] | None = None
+    classified: dict[str, dict[str, Any]] = {}
+    classify_path = "keyword"
 
     if use_llm:
         try:
             from app.content.generator import batch_classify_topics
-            llm_result = batch_classify_topics(cfg, candidates, enabled)
+            llm_result = batch_classify_topics(cfg, after_spam, enabled)
         except Exception as exc:
             logger.warning("[engagement_gate] LLM batch classify failed, falling back to keywords: %s", exc)
-            llm_result = None
+            llm_result = {}
+        if llm_result:
+            classify_path = "llm"
+            classified = {url: dict(meta) for url, meta in llm_result.items()}
+            out.sample_llm_outputs = [
+                f"@{p.get('handle','?')}: {classified.get(p.get('url','')) or 'null'}"
+                for p in after_spam[:5]
+            ]
+        else:
+            logger.info("[engagement_gate] LLM returned 0 matches, falling back to keywords")
 
-    if llm_result is not None and use_llm:
-        logger.info("[engagement_gate] LLM classified %d/%d posts as on-topic", len(llm_result), len(candidates))
-        out: list[dict[str, Any]] = []
-        for p in candidates:
-            url = p.get("url", "")
-            topic = llm_result.get(url)
-            if topic:
-                row = dict(p)
-                row["_topic"] = topic
-                row["_topic_score"] = 1
-                out.append(row)
-        return out
+    if not classified:
+        # Keyword fallback path. Mirrors the LLM political rule so user gets the
+        # same exclusion behaviour either way.
+        km = keyword_map or TOPIC_KEYWORDS
+        skip_political = bool(cfg.get("exclude_political_timeline", True))
+        for p in after_spam:
+            text = p.get("text") or ""
+            if skip_political and _looks_political(text):
+                continue
+            topic, score = classify_topic_scored(text, enabled, km)
+            if score < min_topic_score or not topic:
+                continue
+            classified[p.get("url", f"_idx_{id(p)}")] = {
+                "topic": topic,
+                "trading": _looks_like_trading_or_price_post(text),
+                "score": score,
+            }
 
-    # --- keyword fallback ---
-    logger.info("[engagement_gate] Using keyword classification (LLM off or unavailable)")
-    km = keyword_map or TOPIC_KEYWORDS
-    skip_political = bool(cfg.get("exclude_political_timeline", True))
-    out = []
-    for p in candidates:
-        text = p.get("text") or ""
-        if skip_political and _looks_political(text):
+    allow_trading = _user_allows_trading(cfg)
+    for p in after_spam:
+        url = p.get("url", "")
+        meta = classified.get(url)
+        if not meta or not meta.get("topic"):
+            out.drop_stats["no_topic"] += 1
             continue
-        topic, score = classify_topic_scored(text, enabled, km)
-        if score < min_topic_score or not topic:
+        if not allow_trading and meta.get("trading"):
+            out.drop_stats["trading_blocked"] += 1
             continue
         row = dict(p)
-        row["_topic"] = topic
-        row["_topic_score"] = score
+        row["_topic"] = meta["topic"]
+        row["_topic_score"] = meta.get("score", 1)
         out.append(row)
+
+    out.drop_stats["kept"] = len(out)
+    out.drop_stats["classify_path"] = classify_path  # type: ignore[assignment]
     return out

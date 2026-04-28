@@ -1,11 +1,13 @@
-"""WebSocket endpoint — handles extension connections and log streaming."""
+"""WebSocket endpoints — extension connection + dashboard log streaming."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-from sqlalchemy import select, desc
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 
 from app.database import async_session
 from app.models import Account, Log
@@ -14,41 +16,50 @@ from app.ws.manager import manager
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Server kills the connection if no message arrives in this many seconds. The
+# extension pings every ~30s via chrome.alarms, so 90s gives us 3 missed pings
+# before reaping (catches MV3 service-worker suspension promptly).
+EXTENSION_IDLE_TIMEOUT = 90.0
+
 _log_subscribers: dict[str, list[WebSocket]] = {}
 
 
-async def _add_log(account_id: str, message: str, level: str = "info"):
-    """Persist a log and push to any subscribed dashboards."""
+async def _add_log(account_id: str, message: str, level: str = "info") -> None:
+    """Persist a log row and push it to any subscribed dashboards."""
     async with async_session() as session:
-        log = Log(account_id=account_id, message=message, level=level)
-        session.add(log)
+        session.add(Log(account_id=account_id, message=message, level=level))
         await session.commit()
 
     subs = _log_subscribers.get(account_id, [])
-    dead = []
+    if not subs:
+        return
+    payload = {
+        "type": "log",
+        "account_id": account_id,
+        "message": message,
+        "level": level,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    dead: list[WebSocket] = []
     for ws in subs:
         try:
-            await ws.send_json({
-                "type": "log",
-                "account_id": account_id,
-                "message": message,
-                "level": level,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            await ws.send_json(payload)
         except Exception:
             dead.append(ws)
     for ws in dead:
-        subs.remove(ws)
+        try:
+            subs.remove(ws)
+        except ValueError:
+            pass
 
 
 @router.websocket("/ws/extension/{account_id}")
-async def extension_ws(ws: WebSocket, account_id: str):
+async def extension_ws(ws: WebSocket, account_id: str) -> None:
     """WebSocket endpoint for Chrome extension connections."""
     async with async_session() as session:
-        result = await session.execute(
+        account = (await session.execute(
             select(Account).where(Account.id == account_id)
-        )
-        account = result.scalar_one_or_none()
+        )).scalar_one_or_none()
         if not account:
             await ws.close(code=4001, reason="Unknown account")
             return
@@ -56,62 +67,66 @@ async def extension_ws(ws: WebSocket, account_id: str):
     await manager.connect(account_id, ws)
     await _add_log(account_id, "Extension connected")
 
-    # Server-side liveness: if we don't hear from the extension for 90s,
-    # consider the socket dead and disconnect. This catches the case where the
-    # MV3 service worker is suspended (TCP keepalive can take minutes to fire).
-    async def watchdog():
+    loop = asyncio.get_running_loop()
+    last_recv = loop.time()
+
+    async def watchdog() -> None:
+        nonlocal last_recv
         while True:
-            await asyncio.sleep(90)
-            if (asyncio.get_event_loop().time() - last_recv[0]) > 90:
+            await asyncio.sleep(EXTENSION_IDLE_TIMEOUT)
+            if loop.time() - last_recv > EXTENSION_IDLE_TIMEOUT:
                 try:
                     await ws.close(code=1001, reason="idle timeout")
                 except Exception:
                     pass
                 return
-    last_recv = [asyncio.get_event_loop().time()]
+
     watchdog_task = asyncio.create_task(watchdog())
 
     try:
         while True:
             data = await ws.receive_json()
-            last_recv[0] = asyncio.get_event_loop().time()
+            last_recv = loop.time()
             req_id = data.get("req_id")
             if req_id:
                 manager.resolve(req_id, data)
             elif data.get("cmd") == "ping":
-                await ws.send_json({"cmd": "pong"})
+                try:
+                    await ws.send_json({"cmd": "pong"})
+                except Exception:
+                    break
     except WebSocketDisconnect:
-        manager.disconnect(account_id)
         await _add_log(account_id, "Extension disconnected", level="warning")
     except Exception as e:
-        logger.exception(f"Extension WS error for {account_id}")
-        manager.disconnect(account_id)
+        logger.exception("Extension WS error for %s", account_id)
         await _add_log(account_id, f"Extension error: {e}", level="error")
     finally:
         watchdog_task.cancel()
+        manager.disconnect(account_id)
 
 
 @router.websocket("/ws/logs/{account_id}")
-async def logs_ws(ws: WebSocket, account_id: str):
+async def logs_ws(ws: WebSocket, account_id: str) -> None:
     """WebSocket endpoint for dashboard live log streaming."""
     await ws.accept()
-    if account_id not in _log_subscribers:
-        _log_subscribers[account_id] = []
-    _log_subscribers[account_id].append(ws)
-
+    _log_subscribers.setdefault(account_id, []).append(ws)
     try:
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.debug("logs_ws receive failed", exc_info=True)
+    finally:
         subs = _log_subscribers.get(account_id, [])
         if ws in subs:
             subs.remove(ws)
-            if not subs:
-                _log_subscribers.pop(account_id, None)
+        if not subs:
+            _log_subscribers.pop(account_id, None)
 
 
 def get_log_fn(account_id: str):
     """Return a sync-compatible log function for use in the orchestrator."""
-    def log_fn(message: str, level: str = "info"):
+    def log_fn(message: str, level: str = "info") -> None:
         asyncio.create_task(_add_log(account_id, message, level))
     return log_fn

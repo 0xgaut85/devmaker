@@ -319,13 +319,28 @@ async function actionFollowUser(params = {}) {
   const handle = params.handle || "";
   if (!handle) throw new Error("No handle provided");
 
+  // Try the exact aria-label first ("Follow @handle"), then fall back to the
+  // first visible "Follow" button. The previous selector matched ANY role=button
+  // inside placementTracking, which is wrong on profile pages with sidebars.
   const escaped = CSS.escape(`Follow @${handle}`);
-  const followBtn = document.querySelector(`[data-testid="placementTracking"] [role="button"], [aria-label="${escaped}"]`);
-  if (followBtn) {
-    await humanClick(followBtn);
-    await sleep(randomBetween(1000, 2000));
+  let followBtn = document.querySelector(`[aria-label="${escaped}"]`);
+  if (!followBtn) {
+    const candidates = document.querySelectorAll('[role="button"], button');
+    for (const el of candidates) {
+      const label = (el.getAttribute("aria-label") || el.textContent || "").trim();
+      if (/^Follow(\b|$)/i.test(label) && !/following/i.test(label)) {
+        followBtn = el;
+        break;
+      }
+    }
   }
 
+  if (!followBtn) {
+    return { status: "skipped", error: "Follow button not found" };
+  }
+
+  await humanClick(followBtn);
+  await sleep(randomBetween(1000, 2000));
   return { status: "ok" };
 }
 

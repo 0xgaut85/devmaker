@@ -1,54 +1,34 @@
-"""Sequence orchestrator — port of sequence_engine.py using WebSocket commands."""
+"""Top-level Orchestrator.
+
+Owns the per-account batch lifecycle: warmup, dedup seeding, gating, and
+dispatching to the right :mod:`app.engine.modes` runner. Action-level logic
+lives in :mod:`app.engine.actions`; mode-level logic lives in
+:mod:`app.engine.modes`. This file should stay short.
+"""
+
+from __future__ import annotations
 
 import asyncio
-import random
-from datetime import datetime, timezone
-from typing import Callable
-from zoneinfo import ZoneInfo
+import logging
+from typing import Awaitable, Callable
 
-from app.content.generator import (
-    generate_tweet, generate_quote_comment, generate_reply_comment,
-    generate_project_comment, generate_smart_project_comment,
-    generate_degen_tweet, generate_degen_quote_comment,
-    generate_degen_reply_comment, generate_thread,
-    classify_post_with_llm, extract_position,
-    check_image_relevance_with_vision,
-)
-from app.content.images import fetch_images_as_base64
-from app.content.position_memory import record_position, get_relevant_positions
-from app.content.validator import is_duplicate
-from app.content.rules import (
-    FORMAT_CATALOG, FORMAT_ORDER, DEGEN_FORMAT_CATALOG, DEGEN_FORMAT_ORDER,
-    DEGEN_TOPIC_KEYWORDS, COMMENT_ROTATIONS, TONE_LIST,
-    THREAD_FORMAT_ORDER, LENGTH_FOR_FORMAT, classify_post_type,
-)
-from app.content.topics import classify_topic
-from app.content.engagement_gate import build_eligible_posts, is_spam_post
-from app.ws.manager import manager
+from app.engine import modes as M
+from app.engine import state as S
+from app.engine.actions import SequenceContext
+from app.engine.ext import ExtensionClient
+from app.engine.human import HumanSim
 
 
-_SELFIE_KEYWORDS = frozenset({
-    "selfie", "me today", "fit check", "ootd", "new hair", "got dressed",
-    "mirror pic", "no filter", "feeling cute", "just me", "my face",
-    "new profile", "headshot", "portrait of me",
-})
+logger = logging.getLogger(__name__)
 
-
-def _is_likely_personal_photo(post: dict) -> bool:
-    imgs = post.get("image_urls", [])
-    if len(imgs) != 1:
-        return False
-    text = post.get("text", "").strip()
-    if len(text) < 30:
-        return True
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in _SELFIE_KEYWORDS)
+_VALID_MODES = ("dev", "degen", "rt_farm", "sniper")
 
 
 class Orchestrator:
-    """Runs farming sequences by sending commands to the Chrome extension via WebSocket."""
+    """Runs farming batches by sending commands to the Chrome extension."""
 
-    def __init__(self, account_id: str, cfg: dict, state: dict, log_fn: Callable[[str], None]):
+    def __init__(self, account_id: str, cfg: dict, state: dict,
+                 log_fn: Callable[[str], None]):
         self.account_id = account_id
         self.cfg = cfg
         self.state = state
@@ -56,1393 +36,140 @@ class Orchestrator:
         self._cancelled = False
         self._warmed_up = False
         self._seeded = False
-        # Optional persistence hook injected by the scheduler so we can flush
-        # state mid-batch after every successful action. Defaults to a no-op so
-        # the orchestrator stays unit-testable in isolation.
-        self.persist_state: Callable[[], "asyncio.Future"] | None = None
+        # The scheduler injects a state-flush coroutine so action handlers
+        # can persist after every successful step.
+        self.persist_state: Callable[[], Awaitable[None]] | None = None
 
-    def cancel(self):
+    # -- Lifecycle --------------------------------------------------------
+
+    def cancel(self) -> None:
         self._cancelled = True
 
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
     async def _persist_now(self) -> None:
-        """Best-effort flush of state to the database."""
         if self.persist_state is None:
             return
         try:
             await self.persist_state()
         except Exception:
-            # Persistence failures must never break the running sequence.
-            pass
+            # Persistence failures must never break the running sequence, but
+            # we DO want to know about them — silent swallow used to hide
+            # transient DB outages until state went stale on restart.
+            logger.warning("persist_state failed for %s", self.account_id, exc_info=True)
+            self.log("[Persist] state flush failed (see server log) — continuing.")
 
-    async def _cancellable_sleep(self, seconds: float) -> None:
-        """Sleep in 1s slices so cancel() is honored quickly."""
-        end = max(0.0, float(seconds))
-        while end > 0 and not self._cancelled:
-            slice_dur = 1.0 if end > 1.0 else end
-            await asyncio.sleep(slice_dur)
-            end -= slice_dur
+    # -- Context --------------------------------------------------------
 
-    _SLOW_COMMANDS = {"post_tweet", "post_comment", "post_thread", "quote_tweet", "session_warmup", "scrape_timeline"}
+    def _build_context(self) -> SequenceContext:
+        ext = ExtensionClient(self.account_id, self.log)
+        human = HumanSim(ext, self.cfg, self.state, self.log, self.is_cancelled)
+        ctx = SequenceContext(
+            account_id=self.account_id,
+            cfg=self.cfg,
+            state=self.state,
+            log=self.log,
+            ext=ext,
+            human=human,
+            is_cancelled=self.is_cancelled,
+            persist=self._persist_now,
+            enabled_topics=S.enabled_topics(self.cfg),
+        )
+        return ctx
 
-    async def _cmd(self, cmd: str, timeout: float = 60.0, **params) -> dict:
-        """Send a command to the extension and return the response.
+    # -- Dedup seeding ----------------------------------------------------
 
-        If the extension WebSocket is dead (Chrome MV3 service-worker suspension
-        is the usual cause), wait up to 30s for a reconnect before raising. This
-        prevents the loop-of-failures pattern where one drop nukes 10 follows
-        in <1 second because every iteration raises ConnectionError instantly.
-        """
-        if cmd in self._SLOW_COMMANDS and timeout <= 60.0:
-            timeout = 180.0
-        try:
-            result = await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
-        except ConnectionError:
-            self.log("[Conn] Extension disconnected — waiting up to 30s for reconnect...")
-            ok = await manager.wait_until_connected(self.account_id, timeout=30.0)
-            if not ok:
-                raise
-            self.log("[Conn] Extension reconnected — retrying command.")
-            result = await manager.send_command(self.account_id, cmd, timeout=timeout, **params)
-        if result.get("status") == "error":
-            raise RuntimeError(f"Extension error [{cmd}]: {result.get('error', 'unknown')}")
-        return result
-
-    async def _dismiss_compose_safe(self):
-        """Best-effort cleanup of any open compose dialog."""
-        try:
-            await self._cmd("dismiss_compose")
-        except Exception:
-            pass
-
-    def _use_following(self) -> bool:
-        return bool(self.cfg.get("use_following_tab", True))
-
-    def _enabled_topics(self) -> list[str]:
-        topics = self.cfg.get("topics", {})
-        return [t for t, w in topics.items() if w]
-
-    def _enabled_degen_topics(self) -> list[str]:
-        topics = self.cfg.get("degen_topics", {})
-        return [t for t, w in topics.items() if w]
-
-    def _active_api_key(self) -> str:
-        if self.cfg.get("llm_provider") == "anthropic":
-            return self.cfg.get("anthropic_api_key", "")
-        return self.cfg.get("openai_api_key", "")
-
-    def _recent_posts(self, n: int = 5) -> list[str]:
-        texts = self.state.get("recent_posted_texts", [])
-        return texts[-n:] if texts else []
-
-    # -- State rotation helpers (mirror SequenceState methods) --
-
-    def _next_format(self) -> str:
-        last = self.state.get("last_format", "")
-        idx = 0
-        if last in FORMAT_ORDER:
-            idx = (FORMAT_ORDER.index(last) + 1) % len(FORMAT_ORDER)
-        return FORMAT_ORDER[idx]
-
-    def _topic_weight(self, topic: str) -> float:
-        topics = self.cfg.get("topics", {})
-        degen = self.cfg.get("degen_topics", {})
-        return float(topics.get(topic, 0) or degen.get(topic, 0) or 1)
-
-    def _next_topic(self, enabled: list[str], exclude: list[str] | None = None) -> str:
-        exclude = exclude or []
-        recent = {self.state.get("last_topic_tweet", ""), self.state.get("last_topic_qrt", ""), self.state.get("last_topic_rt", "")}
-        recent.update(exclude)
-        available = [t for t in enabled if t not in recent]
-        if not available:
-            available = [t for t in enabled if t not in exclude]
-        if not available:
-            available = enabled
-        weights = [self._topic_weight(t) for t in available]
-        return random.choices(available, weights=weights, k=1)[0]
-
-    def _next_comment_rotation(self) -> list[str]:
-        last = self.state.get("last_comment_rotation", [])
-        if last in COMMENT_ROTATIONS:
-            idx = (COMMENT_ROTATIONS.index(last) + 1) % len(COMMENT_ROTATIONS)
-        else:
-            idx = 0
-        return COMMENT_ROTATIONS[idx]
-
-    def _next_tone(self, index: int) -> str:
-        return TONE_LIST[index % len(TONE_LIST)]
-
-    def _next_degen_format(self) -> str:
-        last = self.state.get("degen_last_format", "")
-        idx = 0
-        if last in DEGEN_FORMAT_ORDER:
-            idx = (DEGEN_FORMAT_ORDER.index(last) + 1) % len(DEGEN_FORMAT_ORDER)
-        return DEGEN_FORMAT_ORDER[idx]
-
-    def _next_thread_format(self) -> str:
-        last = self.state.get("thread_last_format", "")
-        idx = 0
-        if last in THREAD_FORMAT_ORDER:
-            idx = (THREAD_FORMAT_ORDER.index(last) + 1) % len(THREAD_FORMAT_ORDER)
-        return THREAD_FORMAT_ORDER[idx]
-
-    def _should_post_thread(self) -> bool:
-        seq = self.state.get("sequence_number", 0)
-        every_n = self.cfg.get("thread_every_n_sequences", 4)
-        return seq > 0 and seq % every_n == 0
-
-    # -- Daily caps --
-
-    def _daily_caps(self) -> dict:
-        return {
-            "tweets": self.cfg.get("daily_max_tweets", 8),
-            "comments": self.cfg.get("daily_max_comments", 25),
-            "likes": self.cfg.get("daily_max_likes", 50),
-            "follows": self.cfg.get("daily_max_follows", 10),
-            "qrts": self.cfg.get("daily_max_qrts", 5),
-            "rts": self.cfg.get("daily_max_rts", 10),
-        }
-
-    def _today_key(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    def _today_counts(self) -> dict:
-        daily = self.state.setdefault("daily_actions", {})
-        if not isinstance(daily, dict):
-            daily = {}
-            self.state["daily_actions"] = daily
-        key = self._today_key()
-        if key not in daily:
-            daily[key] = {}
-            # Keep only the last 14 days so the dict doesn't grow forever.
-            if len(daily) > 14:
-                for old_key in sorted(daily.keys())[:-14]:
-                    daily.pop(old_key, None)
-        return daily[key]
-
-    def _can_act(self, action_type: str) -> bool:
-        cap = self._daily_caps().get(action_type)
-        if cap is None:
-            return True
-        counts = self._today_counts()
-        if counts.get(action_type, 0) < cap:
-            return True
-        self.log(f"[Cap] Daily {action_type} limit reached ({cap}/{cap}). Skipping.")
-        return False
-
-    def _record_action(self, action_type: str):
-        counts = self._today_counts()
-        counts[action_type] = counts.get(action_type, 0) + 1
-
-    def _all_caps_reached(self) -> bool:
-        caps = self._daily_caps()
-        for action_type, cap in caps.items():
-            counts = self._today_counts()
-            if counts.get(action_type, 0) < cap:
-                return False
-        return True
-
-    def _record_posted_text(self, text: str):
-        texts = self.state.setdefault("recent_posted_texts", [])
-        texts.append(text)
-        self.state["recent_posted_texts"] = texts[-30:]
-
-    def _record_source_url(self, url: str):
-        urls = self.state.setdefault("recent_source_urls", [])
-        if url not in urls:
-            urls.append(url)
-        self.state["recent_source_urls"] = urls[-50:]
-
-    async def _seed_dedup_from_own_profile(self):
+    async def _seed_dedup_from_own_profile(self, ctx: SequenceContext) -> None:
         handle = self.cfg.get("account_handle", "")
         if not handle:
             return
         try:
-            resp = await self._cmd("scrape_own_profile", handle=handle, max_posts=3)
-            own_posts = resp.get("data", [])
-            if own_posts:
-                texts = self.state.setdefault("recent_posted_texts", [])
-                for p in own_posts:
-                    t = p.get("text", "").strip()
-                    if t and t not in texts:
-                        texts.append(t)
-                self.state["recent_posted_texts"] = texts[-30:]
-                self.log(f"[Dedup] Seeded {len(own_posts)} recent own tweets for redundancy check.")
+            resp = await ctx.ext.send("scrape_own_profile", handle=handle, max_posts=3)
         except Exception as e:
             self.log(f"[Dedup] Could not scrape own profile: {e}")
-
-    # -- Follow helper --
-
-    async def _do_follows(self, post_pool: list[dict], count: int | None = None):
-        # When called from the per-action loop, the planner schedules one
-        # `follow` action per follow the user wants, so the default is 1.
-        # Legacy callers that omit `count` get a small batch.
-        target_follows = count if count is not None else random.randint(7, 8)
-        followed = 0
-        last_follows = self.state.get("last_follows", [])
-
-        try:
-            resp2 = await self._cmd("scrape_who_to_follow")
-            who_to_follow = resp2.get("data", [])
-        except Exception:
-            who_to_follow = []
-
-        timeline_handles = list({
-            p.get("handle") for p in post_pool
-            if p.get("handle") and p.get("handle") not in last_follows
-        })
-        random.shuffle(timeline_handles)
-
-        candidates = []
-        for h in who_to_follow:
-            if h not in last_follows and h not in candidates:
-                candidates.append(h)
-        for h in timeline_handles:
-            if h not in candidates:
-                candidates.append(h)
-
-        for handle in candidates:
-            if self._cancelled:
-                break
-            if followed >= target_follows or not self._can_act("follows"):
-                break
-            try:
-                resp = await self._cmd("follow_user", handle=handle)
-                if resp.get("status") != "ok":
-                    self.log(f"[Follow] Skipped @{handle}: {resp.get('error', resp.get('status', 'unknown'))}")
-                    await self._organic_pause(short=True)
-                    continue
-                self._record_action("follows")
-                self.log(f"[Follow] Followed @{handle}.")
-                last_follows.append(handle)
-                followed += 1
-                await self._organic_pause(short=True)
-            except ConnectionError as e:
-                # _cmd already waited for reconnect once and still failed.
-                # Abort the rest of the batch so we don't burn every candidate
-                # with the same error in <1 second.
-                self.log(f"[Follow] Aborting batch — extension still disconnected: {e}")
-                break
-            except Exception as e:
-                self.log(f"[Follow] Error following @{handle}: {e}")
-                # Pause even on failure so we don't hammer the loop on a
-                # repeating transient error (rate limit, overlay, etc.).
-                await self._organic_pause(short=True)
-        self.state["last_follows"] = last_follows[-100:]
-        self.log(f"[Follow] Followed {followed}/{target_follows} accounts.")
-
-    # -- Active hours --
-
-    def _is_active_hours(self) -> bool:
-        if not self.cfg.get("active_hours_enabled"):
-            return True
-        try:
-            tz = ZoneInfo(self.cfg.get("active_hours_timezone", "UTC"))
-        except Exception:
-            tz = timezone.utc
-        now = datetime.now(tz)
-        start = self.cfg.get("active_hours_start", 8)
-        end = self.cfg.get("active_hours_end", 23)
-        if start <= end:
-            return start <= now.hour < end
-        return now.hour >= start or now.hour < end
-
-    async def _wait_for_active_hours(self):
-        if self._is_active_hours():
             return
-        self.log(f"[Hours] Outside active hours. Waiting...")
-        while not self._is_active_hours() and not self._cancelled:
-            await self._cancellable_sleep(60)
-
-    # -- Human simulation commands --
-
-    async def _organic_pause(self, short: bool = False):
-        # Floor comes from the user-configurable action_delay_seconds setting.
-        # Normal pauses jitter up to 4x the floor; short pauses use half-floor
-        # to 2x-floor so the spread stays human but always >= the user's floor.
-        floor = max(1, int(self.cfg.get("action_delay_seconds", 8) or 8))
-        if short:
-            pause = random.uniform(max(1, floor // 2), floor * 2)
-        else:
-            pause = random.uniform(floor, floor * 4)
-        self.log(f"  [Pause] {pause:.0f}s...")
-        await self._cancellable_sleep(pause)
-        if self._cancelled:
+        own_posts = resp.get("data") or []
+        if not own_posts:
             return
-        if random.random() < 0.3:
-            try:
-                await self._cmd("scroll", count=1)
-            except Exception:
-                pass
-            await self._cancellable_sleep(random.uniform(2, 5))
+        texts = self.state.setdefault("recent_posted_texts", [])
+        for p in own_posts:
+            t = (p.get("text") or "").strip()
+            if t and t not in texts:
+                texts.append(t)
+        from app.engine.constants import RECENT_POSTED_TEXTS_CAP
+        self.state["recent_posted_texts"] = texts[-RECENT_POSTED_TEXTS_CAP:]
+        self.log(f"[Dedup] Seeded {len(own_posts)} recent own tweets for redundancy check.")
 
-    async def _session_warmup(self):
-        self.log("[Warmup] Opening session naturally...")
-        try:
-            await self._cmd("session_warmup", timeout=120)
-        except Exception:
-            pass
-        self.log("[Warmup] Done.")
-
-    async def _lurk_scroll(self, count: int | None = None):
-        count = count or random.randint(3, 8)
-        self.log(f"  [Lurk] Scrolling past {count} posts...")
-        try:
-            await self._cmd("lurk_scroll", count=count, timeout=120)
-        except Exception:
-            pass
-
-    async def _like_and_bookmark(self, post_url: str):
-        if random.random() < 0.8 and self._can_act("likes"):
-            try:
-                resp = await self._cmd("like_post", post_url=post_url)
-                status = resp.get("status")
-                if status == "ok":
-                    self.log("  [Like] Liked post.")
-                    self._record_action("likes")
-                elif status == "already":
-                    self.log("  [Like] Already liked.")
-            except Exception:
-                pass
-            await asyncio.sleep(random.uniform(2, 6))
-        if random.random() < 0.1:
-            try:
-                await self._cmd("bookmark_post", post_url=post_url)
-            except Exception:
-                pass
-            await asyncio.sleep(random.uniform(1, 3))
-
-    # -- Classification --
-
-    async def _filter_images_with_vision(self, image_urls: list[str], generated_text: str) -> list[str]:
-        """If use_vision_image_check is on, drop images the vision model says
-        are irrelevant to the generated text. Fail-closed (skip image) on errors
-        is enforced inside check_image_relevance_with_vision itself."""
-        if not image_urls:
-            return image_urls
-        if not self.cfg.get("use_vision_image_check"):
-            return image_urls
-        try:
-            b64_list = await fetch_images_as_base64(image_urls)
-        except Exception:
-            return []
-        kept: list[str] = []
-        for url, b64 in zip(image_urls, b64_list):
-            if not b64:
-                continue
-            try:
-                ok = await asyncio.to_thread(
-                    check_image_relevance_with_vision, self.cfg, b64, generated_text
-                )
-            except Exception:
-                ok = False
-            if ok:
-                kept.append(url)
-        if len(kept) < len(image_urls):
-            self.log(f"  [Vision] Kept {len(kept)}/{len(image_urls)} images after relevance check.")
-        return kept
-
-    async def _classify_post(self, text: str) -> tuple[str, str, str]:
-        if self.cfg.get("use_llm_classification"):
-            result = await asyncio.to_thread(classify_post_with_llm, self.cfg, text)
-            if result:
-                return result.get("type", "general"), result.get("reply_strategy", ""), result.get("tone", "")
-        ptype, pstrategy = classify_post_type(text)
-        return ptype, pstrategy, ""
-
-    def _get_positions_for(self, post_text: str) -> list[dict]:
-        if not self.cfg.get("position_memory_enabled"):
-            return []
-        return get_relevant_positions(self.state.get("position_history", []), post_text)
-
-    def _record_position_from(self, posted_text: str):
-        if not self.cfg.get("position_memory_enabled"):
-            return
-        result = extract_position(self.cfg, posted_text)
-        if result:
-            history = self.state.setdefault("position_history", [])
-            self.state["position_history"] = record_position(
-                history, result["topic"], result["stance"],
-                datetime.now(timezone.utc).isoformat(),
-            )
-
-    async def _scrape_reply_context(self, post_url: str) -> list[str]:
-        try:
-            resp = await self._cmd("scrape_replies", post_url=post_url, max_replies=6)
-            replies = resp.get("data", [])
-            if replies:
-                self.log(f"  [Context] Got {len(replies)} replies for vibe check.")
-            return replies
-        except Exception:
-            return []
-
-    async def _generate_with_dedup(self, gen_fn, max_retries: int = 3, **kwargs) -> str | None:
-        recent = self._recent_posts()
-        kwargs["recent_posts"] = recent
-        for attempt in range(max_retries):
-            if self._cancelled:
-                return None
-            text = await asyncio.to_thread(gen_fn, **kwargs)
-            if not text:
-                from app.content.generator import get_last_rejection_reason
-                reason = get_last_rejection_reason() or "no reason recorded"
-                self.log(f"  [Gen] {gen_fn.__name__} returned None — last rejection: {reason}")
-                return None
-            if not is_duplicate(text, recent):
-                return text
-            self.log(f"  [Dedup] Attempt {attempt + 1}: too similar, regenerating...")
-        self.log("  [Dedup] WARNING: All attempts similar. Skipping.")
-        return None
-
-    # ================================================================== #
-    #  Sequence dispatch                                                   #
-    # ================================================================== #
+    # -- Sequence dispatch -----------------------------------------------
 
     async def run_sequence(self) -> bool:
-        # NOTE: run_batch already awaits _wait_for_active_hours before each
-        # sequence. Keep run_sequence side-effect-free w.r.t. that wait so a
-        # standalone caller still gets the gate via _all_caps_reached and the
-        # batch path doesn't double-wait.
         if self._cancelled:
             return False
-        if self._all_caps_reached():
+        if S.all_caps_reached(self.state, self.cfg):
             self.log("[Cap] All daily limits reached. Stopping.")
             return False
+
+        ctx = self._build_context()
+        if not self._warmed_up:
+            await ctx.human.session_warmup()
+            self._warmed_up = True
+            if self._cancelled:
+                return False
+
         mode = self.cfg.get("farming_mode", "dev")
-        if mode == "project":
-            return await self._run_project_sequence()
-        elif mode == "degen":
-            return await self._run_degen_sequence()
-        elif mode == "rt_farm":
-            return await self._run_rt_farm_sequence()
-        elif mode == "sniper":
-            return await self._run_sniper_sequence()
-        else:
-            return await self._run_dev_sequence()
-
-    # ================================================================== #
-    #  Dev Farming                                                         #
-    # ================================================================== #
-
-    async def _run_dev_sequence(self) -> bool:
-        self._cancelled = False
-        enabled = self._enabled_topics()
-        if not enabled:
-            self.log("ERROR: Enable at least 1 topic in Settings.")
+        if mode not in _VALID_MODES:
+            self.log(f"ERROR: Unknown farming_mode={mode!r}; valid={_VALID_MODES}")
             return False
-        if not self._active_api_key():
-            self.log("ERROR: No API key configured.")
-            return False
-
         try:
-            if not self._warmed_up:
-                await self._session_warmup()
-                self._warmed_up = True
-
-            format_key = self._next_format()
-            comment_rotation = self._next_comment_rotation()
-            seq_num = self.state.get("sequence_number", 0) + 1
-            self.log(f"=== DEV SEQUENCE {seq_num} | Format: {format_key} ({FORMAT_CATALOG[format_key]['name']}) ===")
-
-            following = self._use_following()
-            min_likes_floor = self.cfg.get("min_engagement_likes", 100)
-            self.log(f"Scraping timeline ({'Following' if following else 'For You'})...")
-            resp = await self._cmd(
-                "scrape_timeline",
-                min_likes=min_likes_floor, max_posts=30, scroll_count=5,
-                use_following_tab=following,
-            )
-            posts = resp.get("data", [])
-            self.log(f"Found {len(posts)} posts (raw).")
-
-            # Fallback scrape #1: scaled-down floor, MERGE not replace.
-            if len(posts) < 8:
-                fallback_likes = max(20, min_likes_floor // 5)
-                self.log(f"Thin first scrape — second pass at min_likes={fallback_likes}...")
-                resp2 = await self._cmd(
-                    "scrape_timeline",
-                    min_likes=fallback_likes, max_posts=30, scroll_count=3,
-                    use_following_tab=following,
-                )
-                extra = resp2.get("data", [])
-                seen_urls = {p.get("url") for p in posts if p.get("url")}
-                for p in extra:
-                    u = p.get("url")
-                    if u and u not in seen_urls:
-                        posts.append(p)
-                        seen_urls.add(u)
-
-            classify_method = "LLM" if self.cfg.get("use_llm_classification", True) else "keywords"
-            self.log(f"Classifying posts ({classify_method})...")
-            eligible = build_eligible_posts(posts, enabled, self.cfg)
-            self.log(f"Topic gate: {len(eligible)}/{len(posts)} posts eligible ({classify_method}).")
-
-            # Fallback scrape #2: only if still under-supplied.
-            if len(eligible) < 3:
-                fallback_likes = max(10, min_likes_floor // 10)
-                self.log(f"Need more eligible posts — third pass at min_likes={fallback_likes}...")
-                resp3 = await self._cmd(
-                    "scrape_timeline",
-                    min_likes=fallback_likes, max_posts=40, scroll_count=6,
-                    use_following_tab=following,
-                )
-                extra = resp3.get("data", [])
-                seen = {p.get("url") for p in eligible}
-                for p in build_eligible_posts(extra, enabled, self.cfg):
-                    u = p.get("url")
-                    if u and u not in seen:
-                        eligible.append(p)
-                        seen.add(u)
-
-            if len(eligible) < 3:
-                self.log(
-                    "ERROR: Not enough posts matching your topics (need at least 3 eligible posts). "
-                    "Broaden topics, use Following tab, or enable allow_trading_price_posts for CT-style posts."
-                )
-                return False
-
-            if self._cancelled:
-                return False
-
-            self.log(f"Engagement pool: {len(eligible)} posts.")
-            random.shuffle(eligible)
-            post_pool = eligible
-            used_urls = set(self.state.get("recent_source_urls", []))
-            # Per-sequence handle anti-spam: a single creator should not be hit
-            # multiple times in one sequence except for a small natural bypass.
-            used_handles: set[str] = set()
-            HANDLE_BYPASS_PROB = 0.10
-
-            def _available(skip_handles: bool = True) -> list[dict]:
-                out = []
-                for p in post_pool:
-                    if p.get("url") in used_urls:
-                        continue
-                    if skip_handles and p.get("handle") in used_handles \
-                            and random.random() > HANDLE_BYPASS_PROB:
-                        continue
-                    out.append(p)
-                return out
-
-            # Build the action list deterministically from the user's
-            # Sequence Composition panel. No more randint/0.2-roll/thread-every-N.
-            actions: list[str] = []
-            actions += ["tweet_text"]     * int(self.cfg.get("seq_text_tweets", 1))
-            actions += ["tweet_rephrase"] * int(self.cfg.get("seq_rephrase_tweets", 1))
-            actions += ["qrt"]            * int(self.cfg.get("seq_qrts", 1))
-            actions += ["rt"]             * int(self.cfg.get("seq_rts", 1))
-            actions += ["comment"]        * int(self.cfg.get("seq_comments", 4))
-            actions += ["follow"]         * int(self.cfg.get("seq_follows", 2))
-            actions += ["thread"]         * int(self.cfg.get("seq_threads", 0))
-
-            random.shuffle(actions)
-            comment_idx = 0
-            self.log(
-                f"[Plan] {len(actions)} actions: "
-                f"{actions.count('tweet_text')} text, "
-                f"{actions.count('tweet_rephrase')} rephrase, "
-                f"{actions.count('comment')} comments, "
-                f"{actions.count('qrt')} qrts, "
-                f"{actions.count('rt')} rts, "
-                f"{actions.count('follow')} follows, "
-                f"{actions.count('thread')} threads."
-            )
-
-            # Caps that the action being run depends on. follow/comment branches
-            # already re-check internally.
-            _CAP_FOR_ACTION = {
-                "tweet_text": "tweets", "tweet_rephrase": "tweets",
-                "qrt": "qrts", "rt": "rts", "thread": "tweets",
-            }
-
-            for action in actions:
-                if self._cancelled:
-                    return False
-
-                # Action-time cap recheck — earlier actions may have exhausted
-                # the cap shared by this one (e.g., a thread eating tweet cap).
-                cap_key = _CAP_FOR_ACTION.get(action)
-                if cap_key and not self._can_act(cap_key):
-                    self.log(f"[{action.upper()}] Skipped — daily {cap_key} cap reached.")
-                    continue
-
-                # tweet_text and follow do not need a post from the pool.
-                if action in ("follow", "tweet_text"):
-                    post = None
-                else:
-                    available = _available()
-                    if not available:
-                        self.log(f"[{action.upper()}] Skipped — no unused posts left.")
-                        continue
-                    # Pool is already topic-gated by build_eligible_posts;
-                    # no per-action re-filter or re-classification needed.
-                    post = available[0]
-
-                if action == "tweet_text":
-                    # Original, from-scratch tweet — no source post, no media.
-                    tweet_topic = self._next_topic(enabled)
-                    self.log(f"[TweetText] Original post on topic={tweet_topic}")
-                    if self._cancelled:
-                        return False
-                    tweet_text = await self._generate_with_dedup(
-                        generate_tweet, cfg=self.cfg,
-                        format_key=format_key,
-                        # Pass topic name so the LLM has a subject to write about
-                        # without grounding in someone else's post text.
-                        original_tweet=tweet_topic,
-                        length_tier=LENGTH_FOR_FORMAT.get(format_key, "MEDIUM"),
-                        enabled_topics=enabled,
-                    )
-                    if not tweet_text:
-                        self.log("[TweetText] Skipped — content generation failed.")
-                    elif self._cancelled:
-                        return False
-                    else:
-                        self.log(f"[TweetText] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
-                        try:
-                            await self._cmd("post_tweet", text=tweet_text, image_urls=[])
-                            self.log("[TweetText] Posted.")
-                            self._record_action("tweets")
-                            self._record_posted_text(tweet_text)
-                            self._record_position_from(tweet_text)
-                            self.state["last_topic_tweet"] = tweet_topic
-                            await self._persist_now()
-                        except Exception as e:
-                            self.log(f"[TweetText] Failed: {e}")
-                            await self._dismiss_compose_safe()
-
-                elif action == "tweet_rephrase":
-                    tweet_topic = self._next_topic(enabled)
-                    topic_post = self._pick_post(
-                        available, tweet_topic, exclude_handles=list(used_handles)
-                    ) or post
-                    src_url = topic_post.get("url", "")
-                    src_handle = topic_post.get("handle", "")
-                    actual_topic = topic_post.get("_topic", tweet_topic)
-                    self.log(f"[TweetRephrase] From @{src_handle} ({topic_post.get('likes', 0)} likes) | topic={actual_topic}")
-                    if self._cancelled:
-                        return False
-                    tweet_text = await self._generate_with_dedup(
-                        generate_tweet, cfg=self.cfg,
-                        format_key=format_key, original_tweet=topic_post["text"],
-                        length_tier=LENGTH_FOR_FORMAT.get(format_key, "MEDIUM"),
-                        enabled_topics=enabled,
-                    )
-                    if not tweet_text:
-                        self.log("[TweetRephrase] Skipped — content generation failed.")
-                    elif self._cancelled:
-                        return False
-                    else:
-                        self.log(f"[TweetRephrase] Generated ({len(tweet_text)} chars): {tweet_text[:80]}...")
-                        image_urls = await self._filter_images_with_vision(
-                            topic_post.get("image_urls", []) or [], tweet_text,
-                        )
-                        try:
-                            await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls)
-                            self.log("[TweetRephrase] Posted.")
-                            # Atomic state update — only after verified post.
-                            used_urls.add(src_url)
-                            if src_handle:
-                                used_handles.add(src_handle)
-                            self._record_action("tweets")
-                            self._record_posted_text(tweet_text)
-                            self._record_source_url(src_url)
-                            self._record_position_from(tweet_text)
-                            # Record the ACTUAL topic of the source we used,
-                            # not the topic we wanted, so _next_topic rotates correctly.
-                            self.state["last_topic_tweet"] = actual_topic
-                            await self._persist_now()
-                        except Exception as e:
-                            self.log(f"[TweetRephrase] Failed: {e}")
-                            await self._dismiss_compose_safe()
-
-                elif action == "qrt":
-                    src_url = post.get("url", "")
-                    src_handle = post.get("handle", "")
-                    self.log(f"[QRT] Quoting @{src_handle}")
-                    await self._like_and_bookmark(src_url)
-                    if self._cancelled:
-                        return False
-                    image_b64_list = await fetch_images_as_base64(post.get("image_urls", []))
-                    quote_comment = await self._generate_with_dedup(
-                        generate_quote_comment, cfg=self.cfg,
-                        original_tweet=post["text"],
-                        enabled_topics=enabled,
-                        image_b64_list=image_b64_list,
-                    )
-                    if not quote_comment:
-                        self.log("[QRT] Skipped — content generation failed.")
-                    elif self._cancelled:
-                        return False
-                    else:
-                        try:
-                            await self._cmd("quote_tweet", post_url=src_url, text=quote_comment)
-                            self.log(f"[QRT] Posted: {quote_comment[:60]}...")
-                            used_urls.add(src_url)
-                            if src_handle:
-                                used_handles.add(src_handle)
-                            self._record_action("qrts")
-                            self._record_posted_text(quote_comment)
-                            self._record_source_url(src_url)
-                            self._record_position_from(quote_comment)
-                            self.state["last_topic_qrt"] = post.get("_topic", "")
-                            await self._persist_now()
-                        except Exception as e:
-                            self.log(f"[QRT] Failed: {e}")
-                            await self._dismiss_compose_safe()
-
-                elif action == "rt":
-                    src_url = post.get("url", "")
-                    src_handle = post.get("handle", "")
-                    self.log(f"[RT] Reposting @{src_handle}")
-                    try:
-                        resp = await self._cmd("retweet", post_url=src_url)
-                        status = resp.get("status")
-                        if status == "ok":
-                            self.log("[RT] Done.")
-                            used_urls.add(src_url)
-                            if src_handle:
-                                used_handles.add(src_handle)
-                            self._record_action("rts")
-                            self._record_source_url(src_url)
-                            self.state["last_topic_rt"] = post.get("_topic", "")
-                            await self._persist_now()
-                        elif status == "already":
-                            self.log("[RT] Already retweeted — marking source used.")
-                            used_urls.add(src_url)
-                            if src_handle:
-                                used_handles.add(src_handle)
-                            self._record_source_url(src_url)
-                            await self._persist_now()
-                        else:
-                            self.log(f"[RT] Skipped: {resp.get('error', status or 'unknown')}")
-                    except Exception as e:
-                        self.log(f"[RT] Failed: {e}")
-
-                elif action == "comment":
-                    if not self._can_act("comments"):
-                        continue
-                    src_url = post.get("url", "")
-                    src_handle = post.get("handle", "")
-                    length = comment_rotation[comment_idx] if comment_idx < len(comment_rotation) else "MEDIUM"
-                    tone = self._next_tone(comment_idx + seq_num)
-                    ptype, pstrategy, _ = await self._classify_post(post["text"])
-                    self.log(f"[Comment] @{src_handle} | {length} | {tone}")
-                    await self._like_and_bookmark(src_url)
-                    if self._cancelled:
-                        return False
-                    existing_replies = await self._scrape_reply_context(src_url)
-                    positions = self._get_positions_for(post["text"])
-                    image_b64_list = await fetch_images_as_base64(post.get("image_urls", []))
-                    comment_text = await self._generate_with_dedup(
-                        generate_reply_comment, cfg=self.cfg,
-                        original_tweet=post["text"], length_tier=length, tone=tone,
-                        post_type=ptype, reply_strategy=pstrategy,
-                        existing_replies=existing_replies, positions=positions,
-                        enabled_topics=enabled,
-                        image_b64_list=image_b64_list,
-                    )
-                    if not comment_text:
-                        self.log("[Comment] Skipped — content generation failed.")
-                    elif self._cancelled:
-                        return False
-                    else:
-                        try:
-                            await self._cmd("post_comment", post_url=src_url, text=comment_text)
-                            self.log(f"  -> Posted.")
-                            used_urls.add(src_url)
-                            if src_handle:
-                                used_handles.add(src_handle)
-                            self._record_action("comments")
-                            self._record_posted_text(comment_text)
-                            self._record_source_url(src_url)
-                            self._record_position_from(comment_text)
-                            await self._persist_now()
-                        except Exception as e:
-                            self.log(f"[Comment] Failed: {e}")
-                            await self._dismiss_compose_safe()
-                    comment_idx += 1
-
-                elif action == "follow":
-                    # One follow per scheduled follow action — the planner
-                    # already queued seq_follows of these.
-                    await self._do_follows(post_pool, count=1)
-                    await self._persist_now()
-
-                elif action == "thread":
-                    self.log("[Thread] Generating thread...")
-                    if self._cancelled:
-                        return False
-                    src_handle = post.get("handle", "") if post else ""
-                    thread_format = self._next_thread_format()
-                    recent = self._recent_posts()
-                    thread_tweets = await asyncio.to_thread(
-                        generate_thread,
-                        cfg=self.cfg, thread_format_key=thread_format,
-                        original_tweet=post["text"], recent_posts=recent,
-                        enabled_topics=enabled,
-                    )
-                    if not thread_tweets:
-                        self.log("[Thread] Skipped — generation failed.")
-                    elif is_duplicate(thread_tweets[0], recent):
-                        self.log("[Thread] Skipped — hook too similar to recent posts.")
-                    elif self._cancelled:
-                        return False
-                    else:
-                        # Each thread tweet counts against the daily tweet cap;
-                        # bail early if the thread itself would push us over.
-                        remaining = self._daily_caps()["tweets"] - self._today_counts().get("tweets", 0)
-                        if remaining < len(thread_tweets):
-                            self.log(
-                                f"[Thread] Skipped — only {remaining} tweet(s) left under cap, "
-                                f"thread needs {len(thread_tweets)}."
-                            )
-                        else:
-                            try:
-                                await self._cmd("post_thread", tweets=thread_tweets)
-                                self.log(f"[Thread] Posted {len(thread_tweets)}-tweet thread.")
-                                if src_handle:
-                                    used_handles.add(src_handle)
-                                # Charge each segment against the tweet cap.
-                                for _ in thread_tweets:
-                                    self._record_action("tweets")
-                                self.state["thread_last_format"] = thread_format
-                                for t in thread_tweets:
-                                    self._record_posted_text(t)
-                                await self._persist_now()
-                            except Exception as e:
-                                self.log(f"[Thread] Failed: {e}")
-                                await self._dismiss_compose_safe()
-
-                # Organic pause between actions (like a real person browsing)
-                if self._cancelled:
-                    return False
-                if random.random() < 0.4:
-                    await self._lurk_scroll(random.randint(1, 3))
-                await self._organic_pause(short=random.random() < 0.5)
-
-            # SAVE STATE
-            self.state["sequence_number"] = seq_num
-            self.state["last_format"] = format_key
-            self.state["last_comment_rotation"] = comment_rotation
-            await self._persist_now()
-            self.log(f"=== DEV SEQUENCE {seq_num} COMPLETE ===")
-            return True
-
+            if mode == "dev":
+                return await M.run_dev_sequence(ctx)
+            if mode == "degen":
+                return await M.run_degen_sequence(ctx)
+            if mode == "rt_farm":
+                return await M.run_rt_farm_sequence(ctx)
+            if mode == "sniper":
+                return await M.run_sniper_sequence(ctx)
         except Exception as e:
             self.log(f"ERROR: {e}")
-            await self._dismiss_compose_safe()
+            await ctx.ext.safe_dismiss_compose()
             return False
+        return False
 
-    # ================================================================== #
-    #  Project Farming                                                     #
-    # ================================================================== #
+    # -- Batch runner ----------------------------------------------------
 
-    async def _run_project_sequence(self) -> bool:
-        self._cancelled = False
-        try:
-            if not self._warmed_up:
-                await self._session_warmup()
-                self._warmed_up = True
-
-            seq_num = self.state.get("project_sequence_number", 0) + 1
-            target = self.cfg.get("project_timeline_comments", 5)
-            min_likes = self.cfg.get("project_timeline_min_likes", 100)
-            self.log(f"=== PROJECT SEQUENCE {seq_num} | target {target} comments ===")
-
-            resp = await self._cmd("scrape_timeline", min_likes=min_likes, max_posts=50, scroll_count=6, use_following_tab=self._use_following())
-            posts = resp.get("data", [])
-            self.log(f"Found {len(posts)} posts.")
-
-            if not posts:
-                self.log("No posts found. Try lowering like threshold.")
-                return True
-
-            # Optional category filter — if the user enabled any project_categories,
-            # gate replies to posts that match those categories. Empty dict means
-            # "no filter, reply everywhere" (preserves previous behavior).
-            cats = self.cfg.get("project_categories") or {}
-            enabled_cats = [k for k, v in cats.items() if v]
-            if enabled_cats:
-                gated = build_eligible_posts(posts, enabled_cats, self.cfg)
-                self.log(f"[ProjectCats] {len(gated)}/{len(posts)} posts match enabled categories.")
-                posts = gated
-                if not posts:
-                    self.log("No posts matched project categories. Skipping sequence.")
-                    return True
-
-            total = 0
-            recent: list[str] = []
-            for post in posts:
-                if total >= target or self._cancelled:
-                    break
-                self.log(f"[Reply] @{post.get('handle')} ({post.get('likes', 0)} likes)")
-                await self._cmd("navigate", url=post["url"])
-                await self._like_and_bookmark(post["url"])
-                if self._cancelled:
-                    break
-
-                name = self.cfg.get("project_name") or post.get("handle", "")
-                try:
-                    resp2 = await self._cmd("scrape_replies", post_url=post["url"], max_replies=5)
-                    top_replies = resp2.get("data", [])
-                except Exception:
-                    top_replies = []
-
-                smart = await asyncio.to_thread(
-                    generate_smart_project_comment,
-                    cfg=self.cfg, post_text=post["text"],
-                    post_author=post.get("handle", ""),
-                    top_replies=top_replies, project_name=name,
-                )
-                comment_text = smart or generate_project_comment(name, recent_comments=recent)
-                if is_duplicate(comment_text, recent):
-                    self.log("[Reply] Skipped — duplicate of recent comment.")
-                    continue
-                self.log(f"[Reply] -> \"{comment_text}\"")
-                if self._cancelled:
-                    break
-                try:
-                    await self._cmd("post_comment", post_url=post["url"], text=comment_text)
-                    recent.append(comment_text)
-                    recent = recent[-10:]
-                    total += 1
-                    self.state["project_comments_sent"] = self.state.get("project_comments_sent", 0) + 1
-                    await self._persist_now()
-                except Exception as e:
-                    self.log(f"[Reply] Failed: {e}")
-                    await self._dismiss_compose_safe()
-                await self._organic_pause(short=True)
-
-            self.state["project_sequence_number"] = seq_num
-            await self._persist_now()
-            self.log(f"=== PROJECT SEQUENCE {seq_num} COMPLETE | {total} comments ===")
-            return True
-
-        except Exception as e:
-            self.log(f"ERROR: {e}")
-            await self._dismiss_compose_safe()
-            return False
-
-    # ================================================================== #
-    #  Degen Farming                                                       #
-    # ================================================================== #
-
-    async def _run_degen_sequence(self) -> bool:
-        self._cancelled = False
-        enabled = self._enabled_degen_topics()
-        if len(enabled) < 2:
-            self.log("ERROR: Need at least 2 degen topics.")
-            return False
-        if not self._active_api_key():
-            self.log("ERROR: No API key configured.")
-            return False
-
-        try:
-            if not self._warmed_up:
-                await self._session_warmup()
-                self._warmed_up = True
-
-            format_key = self._next_degen_format()
-            comment_rotation = self._next_comment_rotation()
-            seq_num = self.state.get("degen_sequence_number", 0) + 1
-            self.log(f"=== DEGEN SEQUENCE {seq_num} | Format: {format_key} ===")
-
-            resp = await self._cmd("scrape_timeline", min_likes=self.cfg.get("min_engagement_likes", 100), max_posts=30, scroll_count=5, use_following_tab=self._use_following())
-            posts = resp.get("data", [])
-            posts = [p for p in posts if not is_spam_post(p)]
-            if len(posts) < 3:
-                self.log("ERROR: Not enough posts.")
-                return False
-
-            tweet_topic = ""
-            tweet_handle = ""
-            used_urls = set(self.state.get("recent_source_urls", []))
-
-            # 1. DEGEN TWEET
-            if self._can_act("tweets"):
-                unused = [p for p in posts if p.get("url") not in used_urls]
-                if unused:
-                    unused.sort(key=lambda p: max(p.get("likes", 0), 1) * (2.0 if p.get("image_urls") and not _is_likely_personal_photo(p) else 1.0), reverse=True)
-                    tweet_post = unused[0]
-                else:
-                    tweet_post = posts[0]
-
-                tweet_topic = classify_topic(tweet_post["text"], enabled, DEGEN_TOPIC_KEYWORDS)
-                tweet_handle = tweet_post.get("handle", "")
-                self.log(f"[Degen Tweet] From @{tweet_handle}")
-
-                if self._cancelled:
-                    return False
-                tweet_text = await self._generate_with_dedup(
-                    generate_degen_tweet, cfg=self.cfg,
-                    format_key=format_key, original_tweet=tweet_post["text"],
-                )
-                if not tweet_text:
-                    self.log("[Degen Tweet] Skipped — content generation failed.")
-                elif self._cancelled:
-                    return False
-                else:
-                    image_urls = await self._filter_images_with_vision(
-                        tweet_post.get("image_urls", []) or [], tweet_text,
-                    )
-                    try:
-                        await self._cmd("post_tweet", text=tweet_text, image_urls=image_urls)
-                        self.log("[Degen Tweet] Posted.")
-                        used_urls.add(tweet_post.get("url", ""))
-                        self._record_action("tweets")
-                        self._record_posted_text(tweet_text)
-                        self._record_source_url(tweet_post.get("url", ""))
-                        self._record_position_from(tweet_text)
-                        await self._persist_now()
-                    except Exception as e:
-                        self.log(f"[Degen Tweet] Failed: {e}")
-                        await self._dismiss_compose_safe()
-            else:
-                tweet_post = posts[0]
-                tweet_handle = tweet_post.get("handle", "")
-
-            if self._cancelled:
-                return False
-            await self._organic_pause()
-            if self._cancelled:
-                return False
-
-            # 2. DEGEN QRT
-            if self._can_act("qrts"):
-                qrt_candidates = [p for p in posts if p.get("url") not in used_urls and p.get("handle") != tweet_handle]
-                if qrt_candidates:
-                    qrt_post = qrt_candidates[0]
-                    qrt_url = qrt_post.get("url", "")
-                    self.log(f"[Degen QRT] Quoting @{qrt_post.get('handle')}")
-                    await self._like_and_bookmark(qrt_url)
-                    if self._cancelled:
-                        return False
-
-                    quote_text = await self._generate_with_dedup(
-                        generate_degen_quote_comment, cfg=self.cfg,
-                        original_tweet=qrt_post["text"],
-                    )
-                    if not quote_text:
-                        self.log("[Degen QRT] Skipped — content generation failed.")
-                    elif self._cancelled:
-                        return False
-                    else:
-                        try:
-                            await self._cmd("quote_tweet", post_url=qrt_url, text=quote_text)
-                            self.log("[Degen QRT] Posted.")
-                            used_urls.add(qrt_url)
-                            self._record_action("qrts")
-                            self._record_posted_text(quote_text)
-                            self._record_source_url(qrt_url)
-                            await self._persist_now()
-                        except Exception as e:
-                            self.log(f"[Degen QRT] Failed: {e}")
-                            await self._dismiss_compose_safe()
-                else:
-                    self.log("[Degen QRT] Skipped — no unused posts.")
-
-            if self._cancelled:
-                return False
-            await self._organic_pause()
-            if self._cancelled:
-                return False
-
-            # 3. DEGEN COMMENTS
-            num_comments = random.randint(3, 5)
-            comment_posts = [p for p in posts if p.get("url") not in used_urls][:num_comments]
-
-            for i, cp in enumerate(comment_posts):
-                if self._cancelled:
-                    return False
-                if not self._can_act("comments"):
-                    break
-                cp_url = cp.get("url", "")
-                length = comment_rotation[i] if i < len(comment_rotation) else "MEDIUM"
-                tone = self._next_tone(i + seq_num)
-                ptype, pstrategy, _ = await self._classify_post(cp["text"])
-
-                await self._like_and_bookmark(cp_url)
-                if self._cancelled:
-                    return False
-                existing_replies = await self._scrape_reply_context(cp_url)
-                positions = self._get_positions_for(cp["text"])
-
-                comment_text = await self._generate_with_dedup(
-                    generate_degen_reply_comment, cfg=self.cfg,
-                    original_tweet=cp["text"], length_tier=length, tone=tone,
-                    post_type=ptype, reply_strategy=pstrategy,
-                    existing_replies=existing_replies, positions=positions,
-                )
-                if not comment_text:
-                    self.log("[Degen Comment] Skipped — content generation failed.")
-                elif self._cancelled:
-                    return False
-                else:
-                    try:
-                        await self._cmd("post_comment", post_url=cp_url, text=comment_text)
-                        self.log("[Degen Comment] Posted.")
-                        used_urls.add(cp_url)
-                        self._record_action("comments")
-                        self._record_posted_text(comment_text)
-                        self._record_source_url(cp_url)
-                        await self._persist_now()
-                    except Exception as e:
-                        self.log(f"[Degen Comment] Failed: {e}")
-                        await self._dismiss_compose_safe()
-                if i < len(comment_posts) - 1:
-                    await self._organic_pause(short=True)
-
-            # 4. DEGEN FOLLOWS
-            if self._cancelled:
-                return False
-            await self._do_follows(posts)
-            await self._persist_now()
-
-            self.state["degen_sequence_number"] = seq_num
-            self.state["degen_last_format"] = format_key
-            self.state["degen_last_topic"] = tweet_topic
-            await self._persist_now()
-            self.log(f"=== DEGEN SEQUENCE {seq_num} COMPLETE ===")
-            return True
-
-        except Exception as e:
-            self.log(f"ERROR: {e}")
-            await self._dismiss_compose_safe()
-            return False
-
-    # ================================================================== #
-    #  RT Farm                                                             #
-    # ================================================================== #
-
-    async def _run_rt_farm_sequence(self) -> bool:
-        target = self.cfg.get("rt_farm_target_handle", "")
-        if not target:
-            self.log("ERROR: No RT farm target handle.")
-            return False
-
-        try:
-            self.log(f"=== RT FARM | Cloning RTs from @{target} ===")
-            resp = await self._cmd("scrape_retweets", handle=target,
-                                   max_scrolls=self.cfg.get("rt_farm_max_scrolls", 50), timeout=300)
-            all_urls = resp.get("data", [])
-
-            if not all_urls:
-                self.log("No retweets found.")
-                return True
-
-            done = set(self.state.get("rt_farm_completed_urls", []))
-            pending = [u for u in all_urls if u not in done]
-            self.log(f"{len(all_urls)} total, {len(pending)} remaining.")
-
-            base_delay = self.cfg.get("rt_farm_delay_seconds", 5)
-            for i, url in enumerate(pending):
-                if self._cancelled:
-                    return False
-                rt_num = i + 1
-                if rt_num > 1 and rt_num % 30 == 0:
-                    await asyncio.sleep(random.uniform(120, 300))
-                elif rt_num > 1 and rt_num % 10 == 0:
-                    await asyncio.sleep(random.uniform(30, 90))
-
-                self.log(f"[RT {rt_num}/{len(pending)}] {url}")
-                success = False
-                try:
-                    resp = await self._cmd("retweet", post_url=url)
-                    status = resp.get("status") if isinstance(resp, dict) else None
-                    success = status in ("ok", "already")
-                    if status == "already":
-                        self.log("  Already retweeted.")
-                except Exception as e:
-                    self.log(f"  Failed: {e}")
-
-                if success:
-                    completed = self.state.setdefault("rt_farm_completed_urls", [])
-                    if url not in completed:
-                        completed.append(url)
-                    self.state["rt_farm_total_retweeted"] = len(completed)
-                    await self._persist_now()
-                await self._cancellable_sleep(base_delay * random.uniform(0.6, 1.4))
-                if self._cancelled:
-                    return False
-
-            self.log(f"=== RT FARM COMPLETE ===")
-            return True
-
-        except Exception as e:
-            self.log(f"ERROR: {e}")
-            await self._dismiss_compose_safe()
-            return False
-
-    # ================================================================== #
-    #  Sniper                                                              #
-    # ================================================================== #
-
-    async def _run_sniper_sequence(self) -> bool:
-        if not self.cfg.get("sniper_enabled", True):
-            self.log("Sniper disabled in config (sniper_enabled=false). Skipping.")
-            return False
-        if not self._active_api_key():
-            self.log("ERROR: No API key configured.")
-            return False
-
-        try:
-            if not self._warmed_up:
-                await self._session_warmup()
-                self._warmed_up = True
-
-            interval = self.cfg.get("sniper_scan_interval_minutes", 8) * 60
-            per_scan = self.cfg.get("sniper_replies_per_scan", 2)
-            min_vel = self.cfg.get("sniper_min_velocity", 100)
-            max_replies = self.cfg.get("sniper_max_replies", 80)
-            scan_num = 0
-
-            self.log(f"=== SNIPER MODE | every {interval // 60}min ===")
-
-            while not self._cancelled:
-                await self._wait_for_active_hours()
-                if self._cancelled:
-                    break
-                if not self._can_act("comments"):
-                    break
-
-                scan_num += 1
-                self.log(f"[Sniper #{scan_num}] Scanning...")
-                await self._lurk_scroll(random.randint(2, 4))
-
-                resp = await self._cmd("scrape_timeline", min_likes=20, max_posts=40, scroll_count=6, sort_by="virality", use_following_tab=self._use_following())
-                posts = resp.get("data", [])
-
-                replied_urls = self.state.get("sniper_replied_urls", [])
-                opps = [p for p in posts
-                        if p.get("velocity", 0) >= min_vel
-                        and p.get("replies", 0) < max_replies
-                        and p.get("url") not in replied_urls]
-
-                self.log(f"[Sniper #{scan_num}] {len(opps)} opportunities")
-
-                for p in opps[:per_scan]:
-                    if self._cancelled or not self._can_act("comments"):
-                        break
-                    self.log(f"  @{p.get('handle')} | vel={p.get('velocity', 0):.0f}")
-                    await self._cmd("navigate", url=p["url"])
-                    await self._like_and_bookmark(p["url"])
-
-                    ptype, pstrategy, _ = self._classify_post(p["text"])
-                    tone = self._next_tone(self.state.get("sniper_total_replies", 0))
-                    length = random.choice(["SHORT", "MEDIUM"])
-                    existing_replies = await self._scrape_reply_context(p["url"])
-                    positions = self._get_positions_for(p["text"])
-                    image_b64_list = await fetch_images_as_base64(p.get("image_urls", []))
-
-                    comment_text = await self._generate_with_dedup(
-                        generate_reply_comment, cfg=self.cfg,
-                        original_tweet=p["text"], length_tier=length, tone=tone,
-                        post_type=ptype, reply_strategy=pstrategy,
-                        existing_replies=existing_replies, positions=positions,
-                        enabled_topics=self._enabled_topics(),
-                        image_b64_list=image_b64_list,
-                    )
-                    if comment_text:
-                        try:
-                            await self._cmd("post_comment", post_url=p["url"], text=comment_text)
-                            self._record_action("comments")
-                            self._record_posted_text(comment_text)
-                            replied = self.state.setdefault("sniper_replied_urls", [])
-                            replied.append(p["url"])
-                            self.state["sniper_replied_urls"] = replied[-200:]
-                            self.state["sniper_total_replies"] = self.state.get("sniper_total_replies", 0) + 1
-                        except Exception as e:
-                            self.log(f"[Sniper] Comment failed: {e}")
-                            await self._dismiss_compose_safe()
-                    else:
-                        self.log("[Sniper] Skipped — content generation failed.")
-                    await self._organic_pause(short=True)
-
-                if self._cancelled:
-                    break
-                jitter = int(interval * random.uniform(0.8, 1.2))
-                self.log(f"[Sniper] Next scan in {jitter // 60}m...")
-                for _ in range(jitter):
-                    if self._cancelled:
-                        break
-                    await asyncio.sleep(1)
-
-            self.log(f"=== SNIPER STOPPED | {self.state.get('sniper_total_replies', 0)} total ===")
-            return True
-
-        except Exception as e:
-            self.log(f"ERROR: {e}")
-            await self._dismiss_compose_safe()
-            return False
-
-    # ================================================================== #
-    #  Batch runner                                                        #
-    # ================================================================== #
-
-    async def run_batch(self, count: int):
+    async def run_batch(self, count: int) -> None:
         self._warmed_up = False
         self._seeded = False
+
         for i in range(count):
             if self._cancelled:
                 self.log("Batch cancelled.")
                 return
-            await self._wait_for_active_hours()
+            ctx = self._build_context()
+            await ctx.human.wait_for_active_hours()
             if self._cancelled:
                 return
-            if self._all_caps_reached():
+            if S.all_caps_reached(self.state, self.cfg):
                 self.log("[Cap] All caps reached. Stopping batch.")
                 return
 
-            # Seed dedup from our own profile once per batch (not per sequence)
-            # so we don't burn an extra scrape every sequence.
+            # Seed dedup from our own profile once per batch.
             if not self._seeded:
                 try:
-                    await self._seed_dedup_from_own_profile()
+                    await self._seed_dedup_from_own_profile(ctx)
                 except Exception as e:
                     self.log(f"[Seed] dedup seed failed: {e}")
                 self._seeded = True
 
-            self.log(f"\n--- Sequence {i+1}/{count} ---")
+            self.log(f"\n--- Sequence {i + 1}/{count} ---")
             success = await self.run_sequence()
             if not success:
-                self.log(f"Sequence {i+1} failed. Stopping.")
+                self.log(f"Sequence {i + 1} failed. Stopping.")
                 return
+
             if i < count - 1:
-                delay = self.cfg.get("sequence_delay_minutes", 45)
-                self.log(f"Waiting {delay}min...")
-                for _ in range(delay * 60):
-                    if self._cancelled:
-                        return
-                    await asyncio.sleep(1)
+                delay_min = int(self.cfg.get("sequence_delay_minutes", 45))
+                self.log(f"Waiting {delay_min}min...")
+                await ctx.human.cancellable_sleep(delay_min * 60)
         self.log("Batch complete.")
-
-    # ================================================================== #
-    #  Helpers                                                             #
-    # ================================================================== #
-
-    def _pick_post(self, posts: list[dict], target_topic: str,
-                   exclude_handles: list[str] | None = None) -> dict | None:
-        """Pick the best on-topic post. The pool is already topic-gated by
-        build_eligible_posts so we trust ``_topic`` and never re-classify."""
-        exclude_handles = exclude_handles or []
-        candidates = [
-            p for p in posts
-            if p.get("handle") not in exclude_handles
-            and p.get("_topic") == target_topic
-        ]
-        if not candidates:
-            # Fallback: any post in the pool (still on one of the enabled topics).
-            candidates = [p for p in posts if p.get("handle") not in exclude_handles]
-        if not candidates:
-            return None
-
-        def _score(p: dict) -> float:
-            likes = max(p.get("likes", 0), 1)
-            has_images = bool(p.get("image_urls"))
-            image_boost = 2.0 if has_images else 1.0
-            if has_images and _is_likely_personal_photo(p):
-                image_boost = 0.5
-            return likes * image_boost
-
-        candidates.sort(key=_score, reverse=True)
-        return candidates[0]

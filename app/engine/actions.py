@@ -1,0 +1,534 @@
+"""Per-action handlers shared by the dev / degen modes.
+
+Each ``do_*`` coroutine runs ONE atomic step (one tweet, one comment, one
+follow). They share state through :class:`SequenceContext`, which the mode
+runners build once per sequence.
+
+A handler is *responsible* for:
+1. Re-checking its own daily cap (the planner already does so once but caps
+   can be hit mid-sequence by a thread eating tweet quota).
+2. Mutating ``ctx.used_urls``/``ctx.used_handles`` only AFTER a successful
+   post is verified by the extension.
+3. Calling ``ctx.persist()`` so the scheduler can flush state on the next
+   safe boundary.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import random
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable
+
+from app.content.engagement_gate import is_spam_post
+from app.content.generator import (
+    GenerationResult, ThreadResult,
+    check_image_relevance_with_vision, classify_post_with_llm,
+    extract_position, generate_quote_comment, generate_reply_comment,
+    generate_thread, generate_tweet,
+)
+from app.content.images import fetch_images_as_base64
+from app.content.position_memory import get_relevant_positions
+from app.content.rules import LENGTH_FOR_FORMAT, classify_post_type
+from app.content.validator import is_duplicate
+from app.engine import state as S
+from app.engine.constants import MAX_GEN_RETRIES
+from app.engine.ext import ExtensionClient
+from app.engine.human import HumanSim
+
+
+# --------------------------------------------------------------------------- #
+#  Context                                                                    #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class SequenceContext:
+    """Everything an action handler needs, packaged once per sequence."""
+    account_id: str
+    cfg: dict
+    state: dict
+    log: Callable[[str], None]
+    ext: ExtensionClient
+    human: HumanSim
+    is_cancelled: Callable[[], bool]
+    persist: Callable[[], Awaitable[None]]
+
+    enabled_topics: list[str] = field(default_factory=list)
+    seq_num: int = 0
+    format_key: str = ""
+    comment_rotation: list[str] = field(default_factory=list)
+    comment_idx: int = 0
+
+    used_urls: set[str] = field(default_factory=set)
+    used_handles: set[str] = field(default_factory=set)
+
+    # Cached "Who to follow" handles, populated lazily on first follow action
+    # so multiple do_follow_one calls in one sequence don't re-scrape.
+    # ``None`` = not fetched yet, ``[]`` = fetched but empty.
+    wtf_cache: list[str] | None = None
+
+
+# --------------------------------------------------------------------------- #
+#  Generic helpers used by handlers                                           #
+# --------------------------------------------------------------------------- #
+
+async def generate_with_dedup(
+    ctx: SequenceContext,
+    gen_fn,
+    label: str,
+    **kwargs,
+) -> str | None:
+    """Wrap a ``generate_*`` call so we retry on near-duplicate output.
+
+    All generators now return :class:`GenerationResult`, so we get a clean
+    rejection ``reason`` without any global mutable state.
+    """
+    recent = S.recent_posts(ctx.state)
+    kwargs["recent_posts"] = recent
+    for attempt in range(MAX_GEN_RETRIES):
+        if ctx.is_cancelled():
+            return None
+        result: GenerationResult = await asyncio.to_thread(gen_fn, **kwargs)
+        if not result.text:
+            ctx.log(f"  [Gen] {label} failed: {result.reason or 'no reason recorded'}")
+            return None
+        if not is_duplicate(result.text, recent):
+            return result.text
+        ctx.log(f"  [Dedup] Attempt {attempt + 1}: too similar to recent post, regenerating...")
+    ctx.log("  [Dedup] All attempts similar. Skipping.")
+    return None
+
+
+async def filter_images_with_vision(ctx: SequenceContext, image_urls: list[str],
+                                    generated_text: str) -> list[str]:
+    """If vision check is on, drop images the model says are off-topic."""
+    if not image_urls or not ctx.cfg.get("use_vision_image_check"):
+        return image_urls
+    try:
+        b64_list = await fetch_images_as_base64(image_urls)
+    except Exception:
+        return []
+    kept: list[str] = []
+    for url, b64 in zip(image_urls, b64_list):
+        if not b64:
+            continue
+        try:
+            ok = await asyncio.to_thread(
+                check_image_relevance_with_vision, ctx.cfg, b64, generated_text,
+            )
+        except Exception:
+            ok = False
+        if ok:
+            kept.append(url)
+    if len(kept) < len(image_urls):
+        ctx.log(f"  [Vision] Kept {len(kept)}/{len(image_urls)} images after relevance check.")
+    return kept
+
+
+async def classify_post_async(ctx: SequenceContext, text: str) -> tuple[str, str, str]:
+    if ctx.cfg.get("use_llm_classification"):
+        result = await asyncio.to_thread(classify_post_with_llm, ctx.cfg, text)
+        if result:
+            return (
+                result.get("type", "general"),
+                result.get("reply_strategy", ""),
+                result.get("tone", ""),
+            )
+    ptype, strategy = classify_post_type(text)
+    return ptype, strategy, ""
+
+
+def positions_for(ctx: SequenceContext, post_text: str) -> list[dict]:
+    if not ctx.cfg.get("position_memory_enabled"):
+        return []
+    return get_relevant_positions(ctx.state.get("position_history", []), post_text)
+
+
+def record_position_from_post(ctx: SequenceContext, posted_text: str) -> None:
+    if not ctx.cfg.get("position_memory_enabled"):
+        return
+    result = extract_position(ctx.cfg, posted_text)
+    if result and result.get("topic") and result.get("stance"):
+        S.record_position_in_state(ctx.state, result["topic"], result["stance"])
+
+
+async def scrape_reply_context(ctx: SequenceContext, post_url: str) -> list[str]:
+    try:
+        resp = await ctx.ext.send("scrape_replies", post_url=post_url, max_replies=6)
+        replies = resp.get("data", []) or []
+        if replies:
+            ctx.log(f"  [Context] Got {len(replies)} replies for vibe check.")
+        return replies
+    except Exception:
+        return []
+
+
+# --------------------------------------------------------------------------- #
+#  Pool helpers                                                               #
+# --------------------------------------------------------------------------- #
+
+# Probability of allowing a post by an already-used handle. Kept tiny so the
+# bot doesn't spam the same creator.
+HANDLE_BYPASS_PROB = 0.10
+
+
+def available_posts(pool: list[dict], ctx: SequenceContext, *,
+                    skip_handles: bool = True) -> list[dict]:
+    out: list[dict] = []
+    for p in pool:
+        if p.get("url") in ctx.used_urls:
+            continue
+        if skip_handles and p.get("handle") in ctx.used_handles \
+                and random.random() > HANDLE_BYPASS_PROB:
+            continue
+        out.append(p)
+    return out
+
+
+_PICK_TOP_K = 3
+
+
+def pick_post(pool: list[dict], target_topic: str = "",
+              exclude_handles: list[str] | None = None) -> dict | None:
+    """Pick a high-engagement on-topic post from ``pool``.
+
+    Pool is already topic-gated by :func:`build_eligible_posts` so we trust
+    ``_topic`` and never re-classify. We randomize among the top-K by likes so
+    sequential calls in the same sequence don't deterministically grab the
+    same post each time.
+    """
+    exclude_handles = exclude_handles or []
+    candidates = [p for p in pool if p.get("handle") not in exclude_handles]
+    if target_topic:
+        on_topic = [p for p in candidates if p.get("_topic") == target_topic]
+        if on_topic:
+            candidates = on_topic
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: max(p.get("likes", 0), 1), reverse=True)
+    return random.choice(candidates[:_PICK_TOP_K])
+
+
+def filter_clean(posts: list[dict]) -> list[dict]:
+    return [p for p in posts if not is_spam_post(p)]
+
+
+# --------------------------------------------------------------------------- #
+#  Action handlers                                                            #
+# --------------------------------------------------------------------------- #
+
+def _truncate(s: str, n: int = 80) -> str:
+    return (s[:n] + "...") if len(s) > n else s
+
+
+async def do_tweet_text(ctx: SequenceContext) -> bool:
+    """Original from-scratch tweet. No source post, no media."""
+    if not S.can_act(ctx.state, ctx.cfg, "tweets"):
+        ctx.log("[TweetText] Skipped — daily tweets cap reached.")
+        return False
+    topic = S.next_topic(ctx.cfg, ctx.state, ctx.enabled_topics)
+    ctx.log(f"[TweetText] Original post on topic={topic}")
+    text = await generate_with_dedup(
+        ctx, generate_tweet, label="generate_tweet",
+        cfg=ctx.cfg, format_key=ctx.format_key,
+        original_tweet=topic,
+        length_tier=LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM"),
+        enabled_topics=ctx.enabled_topics,
+    )
+    if not text or ctx.is_cancelled():
+        return False
+    ctx.log(f"[TweetText] Generated ({len(text)} chars): {_truncate(text)}")
+    try:
+        await ctx.ext.send("post_tweet", text=text, image_urls=[])
+    except Exception as e:
+        ctx.log(f"[TweetText] Failed: {e}")
+        await ctx.ext.safe_dismiss_compose()
+        return False
+    ctx.log("[TweetText] Posted.")
+    S.record_action(ctx.state, "tweets")
+    S.remember_posted_text(ctx.state, text)
+    record_position_from_post(ctx, text)
+    ctx.state["last_topic_tweet"] = topic
+    await ctx.persist()
+    return True
+
+
+async def do_tweet_rephrase(ctx: SequenceContext, pool: list[dict]) -> bool:
+    if not S.can_act(ctx.state, ctx.cfg, "tweets"):
+        ctx.log("[TweetRephrase] Skipped — daily tweets cap reached.")
+        return False
+    available = available_posts(pool, ctx)
+    if not available:
+        ctx.log("[TweetRephrase] Skipped — no unused posts.")
+        return False
+    topic = S.next_topic(ctx.cfg, ctx.state, ctx.enabled_topics)
+    src = pick_post(available, topic, exclude_handles=list(ctx.used_handles)) or available[0]
+    src_url, src_handle = src.get("url", ""), src.get("handle", "")
+    actual_topic = src.get("_topic", topic)
+    ctx.log(f"[TweetRephrase] From @{src_handle} ({src.get('likes', 0)} likes) | topic={actual_topic}")
+    text = await generate_with_dedup(
+        ctx, generate_tweet, label="generate_tweet",
+        cfg=ctx.cfg, format_key=ctx.format_key,
+        original_tweet=src["text"],
+        length_tier=LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM"),
+        enabled_topics=ctx.enabled_topics,
+    )
+    if not text or ctx.is_cancelled():
+        return False
+    ctx.log(f"[TweetRephrase] Generated ({len(text)} chars): {_truncate(text)}")
+    image_urls = await filter_images_with_vision(ctx, src.get("image_urls") or [], text)
+    try:
+        await ctx.ext.send("post_tweet", text=text, image_urls=image_urls)
+    except Exception as e:
+        ctx.log(f"[TweetRephrase] Failed: {e}")
+        await ctx.ext.safe_dismiss_compose()
+        return False
+    ctx.log("[TweetRephrase] Posted.")
+    ctx.used_urls.add(src_url)
+    if src_handle:
+        ctx.used_handles.add(src_handle)
+    S.record_action(ctx.state, "tweets")
+    S.remember_posted_text(ctx.state, text)
+    S.remember_source_url(ctx.state, src_url)
+    record_position_from_post(ctx, text)
+    ctx.state["last_topic_tweet"] = actual_topic
+    await ctx.persist()
+    return True
+
+
+async def do_qrt(ctx: SequenceContext, pool: list[dict]) -> bool:
+    if not S.can_act(ctx.state, ctx.cfg, "qrts"):
+        ctx.log("[QRT] Skipped — daily qrts cap reached.")
+        return False
+    available = available_posts(pool, ctx)
+    if not available:
+        ctx.log("[QRT] Skipped — no unused posts.")
+        return False
+    src = available[0]
+    src_url, src_handle = src.get("url", ""), src.get("handle", "")
+    ctx.log(f"[QRT] Quoting @{src_handle}")
+    await ctx.human.like_and_bookmark(src_url)
+    if ctx.is_cancelled():
+        return False
+    image_b64 = await fetch_images_as_base64(src.get("image_urls") or [])
+    text = await generate_with_dedup(
+        ctx, generate_quote_comment, label="generate_quote",
+        cfg=ctx.cfg, original_tweet=src["text"],
+        enabled_topics=ctx.enabled_topics, image_b64_list=image_b64,
+    )
+    if not text or ctx.is_cancelled():
+        return False
+    try:
+        await ctx.ext.send("quote_tweet", post_url=src_url, text=text)
+    except Exception as e:
+        ctx.log(f"[QRT] Failed: {e}")
+        await ctx.ext.safe_dismiss_compose()
+        return False
+    ctx.log(f"[QRT] Posted: {_truncate(text, 60)}")
+    ctx.used_urls.add(src_url)
+    if src_handle:
+        ctx.used_handles.add(src_handle)
+    S.record_action(ctx.state, "qrts")
+    S.remember_posted_text(ctx.state, text)
+    S.remember_source_url(ctx.state, src_url)
+    record_position_from_post(ctx, text)
+    ctx.state["last_topic_qrt"] = src.get("_topic", "")
+    await ctx.persist()
+    return True
+
+
+async def do_rt(ctx: SequenceContext, pool: list[dict]) -> bool:
+    if not S.can_act(ctx.state, ctx.cfg, "rts"):
+        ctx.log("[RT] Skipped — daily rts cap reached.")
+        return False
+    available = available_posts(pool, ctx)
+    if not available:
+        ctx.log("[RT] Skipped — no unused posts.")
+        return False
+    src = available[0]
+    src_url, src_handle = src.get("url", ""), src.get("handle", "")
+    ctx.log(f"[RT] Reposting @{src_handle}")
+    try:
+        resp = await ctx.ext.send("retweet", post_url=src_url)
+    except Exception as e:
+        ctx.log(f"[RT] Failed: {e}")
+        return False
+    status = resp.get("status")
+    if status not in ("ok", "already"):
+        ctx.log(f"[RT] Skipped: {resp.get('error', status or 'unknown')}")
+        return False
+    ctx.log("[RT] Done." if status == "ok" else "[RT] Already retweeted — marking source used.")
+    ctx.used_urls.add(src_url)
+    if src_handle:
+        ctx.used_handles.add(src_handle)
+    if status == "ok":
+        S.record_action(ctx.state, "rts")
+    S.remember_source_url(ctx.state, src_url)
+    ctx.state["last_topic_rt"] = src.get("_topic", "")
+    await ctx.persist()
+    return True
+
+
+async def do_comment(ctx: SequenceContext, pool: list[dict],
+                     gen_fn=generate_reply_comment, log_prefix: str = "[Comment]") -> bool:
+    if not S.can_act(ctx.state, ctx.cfg, "comments"):
+        ctx.log(f"{log_prefix} Skipped — daily comments cap reached.")
+        return False
+    available = available_posts(pool, ctx)
+    if not available:
+        ctx.log(f"{log_prefix} Skipped — no unused posts.")
+        return False
+    src = available[0]
+    src_url, src_handle = src.get("url", ""), src.get("handle", "")
+    rotation = ctx.comment_rotation or ["MEDIUM"]
+    length = rotation[ctx.comment_idx] if ctx.comment_idx < len(rotation) else "MEDIUM"
+    tone = S.tone_for(ctx.comment_idx + ctx.seq_num)
+    ptype, strategy, _ = await classify_post_async(ctx, src["text"])
+    ctx.log(f"{log_prefix} @{src_handle} | {length} | {tone}")
+    await ctx.human.like_and_bookmark(src_url)
+    if ctx.is_cancelled():
+        return False
+    existing_replies = await scrape_reply_context(ctx, src_url)
+    positions = positions_for(ctx, src["text"])
+    image_b64 = await fetch_images_as_base64(src.get("image_urls") or [])
+    text = await generate_with_dedup(
+        ctx, gen_fn, label="generate_reply",
+        cfg=ctx.cfg, original_tweet=src["text"],
+        length_tier=length, tone=tone,
+        post_type=ptype, reply_strategy=strategy,
+        existing_replies=existing_replies, positions=positions,
+        enabled_topics=ctx.enabled_topics,
+        image_b64_list=image_b64,
+    )
+    ctx.comment_idx += 1
+    if not text or ctx.is_cancelled():
+        return False
+    try:
+        await ctx.ext.send("post_comment", post_url=src_url, text=text)
+    except Exception as e:
+        ctx.log(f"{log_prefix} Failed: {e}")
+        await ctx.ext.safe_dismiss_compose()
+        return False
+    ctx.log(f"  -> Posted.")
+    ctx.used_urls.add(src_url)
+    if src_handle:
+        ctx.used_handles.add(src_handle)
+    S.record_action(ctx.state, "comments")
+    S.remember_posted_text(ctx.state, text)
+    S.remember_source_url(ctx.state, src_url)
+    record_position_from_post(ctx, text)
+    await ctx.persist()
+    return True
+
+
+async def do_thread(ctx: SequenceContext, pool: list[dict] | None = None) -> bool:
+    if not S.can_act(ctx.state, ctx.cfg, "tweets"):
+        ctx.log("[Thread] Skipped — daily tweets cap reached.")
+        return False
+    # Pre-flight cap check. A thread is at least 2 tweets, so if we don't have
+    # room for 2 we must skip BEFORE burning an LLM call we'd just throw away.
+    caps = S.daily_caps_for(ctx.cfg)
+    counts = S.today_counts(ctx.state)
+    remaining = caps["tweets"] - counts.get("tweets", 0)
+    if remaining < 2:
+        ctx.log(f"[Thread] Skipped — only {remaining} tweet(s) left under cap; thread needs >=2.")
+        return False
+    src = (available_posts(pool, ctx) if pool else None)
+    src_post = src[0] if src else None
+    if src_post is None and pool is not None:
+        ctx.log("[Thread] Skipped — no unused posts.")
+        return False
+    src_handle = src_post.get("handle", "") if src_post else ""
+    src_text = src_post.get("text", "") if src_post else ""
+    thread_format = S.next_thread_format(ctx.state)
+    ctx.log("[Thread] Generating thread...")
+    recent = S.recent_posts(ctx.state)
+    result: ThreadResult = await asyncio.to_thread(
+        generate_thread,
+        cfg=ctx.cfg, thread_format_key=thread_format,
+        original_tweet=src_text, recent_posts=recent,
+        enabled_topics=ctx.enabled_topics,
+    )
+    if not result.tweets:
+        ctx.log(f"[Thread] Skipped — generation failed: {result.reason}")
+        return False
+    if is_duplicate(result.tweets[0], recent):
+        ctx.log("[Thread] Skipped — hook too similar to recent posts.")
+        return False
+    if ctx.is_cancelled():
+        return False
+    # Re-check post-generation: a long thread might still exceed remaining cap.
+    if remaining < len(result.tweets):
+        ctx.log(
+            f"[Thread] Skipped — only {remaining} tweet(s) left under cap, "
+            f"thread needs {len(result.tweets)}."
+        )
+        return False
+    try:
+        await ctx.ext.send("post_thread", tweets=result.tweets)
+    except Exception as e:
+        ctx.log(f"[Thread] Failed: {e}")
+        await ctx.ext.safe_dismiss_compose()
+        return False
+    ctx.log(f"[Thread] Posted {len(result.tweets)}-tweet thread.")
+    if src_handle:
+        ctx.used_handles.add(src_handle)
+    for _ in result.tweets:
+        S.record_action(ctx.state, "tweets")
+    ctx.state["thread_last_format"] = thread_format
+    for t in result.tweets:
+        S.remember_posted_text(ctx.state, t)
+    await ctx.persist()
+    return True
+
+
+async def do_follow_one(ctx: SequenceContext, pool: list[dict]) -> bool:
+    """Follow ONE candidate (the planner schedules N follows, one per call)."""
+    if not S.can_act(ctx.state, ctx.cfg, "follows"):
+        return False
+    last_follows = list(ctx.state.get("last_follows") or [])
+
+    if ctx.wtf_cache is None:
+        try:
+            resp = await ctx.ext.send("scrape_who_to_follow")
+            ctx.wtf_cache = resp.get("data") or []
+        except Exception:
+            ctx.wtf_cache = []
+    wtf = ctx.wtf_cache
+
+    timeline_handles = [
+        h for h in {p.get("handle") for p in pool}
+        if h and h not in last_follows
+    ]
+    random.shuffle(timeline_handles)
+
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for h in (*wtf, *timeline_handles):
+        if h and h not in last_follows and h not in seen:
+            candidates.append(h)
+            seen.add(h)
+
+    for handle in candidates:
+        if ctx.is_cancelled():
+            return False
+        try:
+            resp = await ctx.ext.send("follow_user", handle=handle)
+        except ConnectionError as e:
+            ctx.log(f"[Follow] Aborting — extension still disconnected: {e}")
+            return False
+        except Exception as e:
+            ctx.log(f"[Follow] Error following @{handle}: {e}")
+            await ctx.human.organic_pause(short=True)
+            continue
+        if resp.get("status") != "ok":
+            ctx.log(f"[Follow] Skipped @{handle}: {resp.get('error', resp.get('status', 'unknown'))}")
+            await ctx.human.organic_pause(short=True)
+            continue
+        S.record_action(ctx.state, "follows")
+        S.remember_follow(ctx.state, handle)
+        ctx.log(f"[Follow] Followed @{handle}.")
+        await ctx.persist()
+        return True
+    ctx.log("[Follow] No new candidates available.")
+    return False

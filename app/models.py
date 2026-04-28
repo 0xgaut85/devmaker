@@ -2,19 +2,20 @@
 
 import uuid
 from datetime import datetime, timezone
+
 from sqlalchemy import (
-    Column, String, Integer, Boolean, Float, Text, DateTime, ForeignKey, JSON,
+    Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text,
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _uuid():
+def _uuid() -> str:
     return str(uuid.uuid4())
 
 
@@ -38,7 +39,7 @@ class Config(Base):
     id = Column(String, primary_key=True, default=_uuid)
     account_id = Column(String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, unique=True)
 
-    farming_mode = Column(String, default="dev")
+    farming_mode = Column(String, default="dev")  # dev | degen | rt_farm | sniper
 
     # LLM
     llm_provider = Column(String, default="openai")
@@ -47,7 +48,7 @@ class Config(Base):
     openai_model = Column(String, default="gpt-4o")
     anthropic_model = Column(String, default="claude-sonnet-4-20250514")
 
-    # Voice
+    # Voice (dev mode)
     voice_description = Column(Text, default="")
     bad_examples = Column(Text, default="")
     good_examples = Column(Text, default="")
@@ -58,16 +59,7 @@ class Config(Base):
     topics = Column(JSON, default=dict)
     degen_topics = Column(JSON, default=dict)
 
-    # Project Farming
-    project_name = Column(String, default="")
-    project_about = Column(Text, default="")
-    project_do = Column(Text, default="")
-    project_dont = Column(Text, default="")
-    project_categories = Column(JSON, default=dict)
-    project_timeline_comments = Column(Integer, default=5)
-    project_timeline_min_likes = Column(Integer, default=100)
-
-    # Degen
+    # Degen voice
     degen_voice_description = Column(Text, default="")
     degen_do = Column(Text, default="")
     degen_dont = Column(Text, default="")
@@ -84,10 +76,10 @@ class Config(Base):
     sniper_max_replies = Column(Integer, default=80)
     sniper_replies_per_scan = Column(Integer, default=2)
 
-    # Thread
+    # Thread (derived from seq_threads on write)
     thread_every_n_sequences = Column(Integer, default=4)
 
-    # Intelligence
+    # Intelligence toggles
     use_llm_classification = Column(Boolean, default=True)
     use_vision_image_check = Column(Boolean, default=False)
     position_memory_enabled = Column(Boolean, default=True)
@@ -144,28 +136,20 @@ class State(Base):
     id = Column(String, primary_key=True, default=_uuid)
     account_id = Column(String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, unique=True)
 
+    # Dev mode rotation
     sequence_number = Column(Integer, default=0)
     last_format = Column(String, default="")
     last_topic_tweet = Column(String, default="")
     last_topic_qrt = Column(String, default="")
     last_topic_rt = Column(String, default="")
-    last_qrt_author = Column(String, default="")
-    last_comment_topics = Column(JSON, default=list)
     last_comment_rotation = Column(JSON, default=list)
     last_follows = Column(JSON, default=list)
-    history = Column(JSON, default=list)
-
-    # Project
-    project_sequence_number = Column(Integer, default=0)
-    project_comments_sent = Column(Integer, default=0)
-    project_accounts_visited = Column(JSON, default=list)
 
     # Degen
     degen_sequence_number = Column(Integer, default=0)
     degen_last_format = Column(String, default="")
     degen_last_topic = Column(String, default="")
     degen_last_comment_rotation = Column(JSON, default=list)
-    degen_history = Column(JSON, default=list)
 
     # RT Farm
     rt_farm_completed_urls = Column(JSON, default=list)
@@ -188,7 +172,7 @@ class State(Base):
     # Position memory
     position_history = Column(JSON, default=list)
 
-    # Daily actions
+    # Daily action counters (rolling 14-day window keyed by YYYY-MM-DD)
     daily_actions = Column(JSON, default=dict)
 
     account = relationship("Account", back_populates="state")

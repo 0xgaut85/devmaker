@@ -63,11 +63,6 @@ def is_duplicate(
     return False
 
 
-def is_too_similar(text: str, recent_texts: list[str], threshold: float = 0.55) -> bool:
-    """Backwards-compatible wrapper around :func:`is_duplicate`."""
-    return is_duplicate(text, recent_texts, threshold=threshold)
-
-
 class ValidationResult:
     def __init__(self, text: str, passed: bool, reason: str = ""):
         self.text = text
