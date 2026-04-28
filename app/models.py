@@ -87,6 +87,9 @@ class Config(Base):
     # Sequence composition (per-sequence, exact counts)
     seq_text_tweets = Column(Integer, default=1)
     seq_rephrase_tweets = Column(Integer, default=1)
+    # Original tweet that REQUIRES attaching media (image) from a high-engagement
+    # source post. Skips with a clear log when no eligible source has media.
+    seq_media_tweets = Column(Integer, default=0)
     seq_comments = Column(Integer, default=4)
     seq_qrts = Column(Integer, default=1)
     seq_rts = Column(Integer, default=1)

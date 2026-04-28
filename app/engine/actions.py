@@ -30,7 +30,7 @@ from app.content.generator import (
 from app.content.images import fetch_images_as_base64
 from app.content.position_memory import get_relevant_positions
 from app.content.rules import LENGTH_FOR_FORMAT, classify_post_type
-from app.content.validator import is_duplicate
+from app.content.validator import has_repeated_opener, is_duplicate
 from app.engine import state as S
 from app.engine.constants import MAX_GEN_RETRIES
 from app.engine.ext import ExtensionClient
@@ -80,7 +80,14 @@ async def generate_with_dedup(
 ) -> str | None:
     """Wrap a ``generate_*`` call so we retry on near-duplicate output.
 
-    All generators now return :class:`GenerationResult`, so we get a clean
+    Two checks per attempt:
+    - :func:`is_duplicate` – Jaccard word overlap, catches "same idea, slightly
+      reworded" repeats.
+    - :func:`has_repeated_opener` – literal first-word fingerprint, catches the
+      "4 'Hot take:' tweets in a row" failure mode where the body differs but
+      the opener is identical and the LLM has fallen into a stylistic rut.
+
+    All generators return :class:`GenerationResult`, so we get a clean
     rejection ``reason`` without any global mutable state.
     """
     recent = S.recent_posts(ctx.state)
@@ -92,16 +99,29 @@ async def generate_with_dedup(
         if not result.text:
             ctx.log(f"  [Gen] {label} failed: {result.reason or 'no reason recorded'}")
             return None
-        if not is_duplicate(result.text, recent):
-            return result.text
-        ctx.log(f"  [Dedup] Attempt {attempt + 1}: too similar to recent post, regenerating...")
-    ctx.log("  [Dedup] All attempts similar. Skipping.")
+        if is_duplicate(result.text, recent):
+            ctx.log(f"  [Dedup] Attempt {attempt + 1}: too similar to recent post, regenerating...")
+            continue
+        if has_repeated_opener(result.text, recent):
+            ctx.log(
+                f"  [Dedup] Attempt {attempt + 1}: same opener as a recent post "
+                "('{}'...), regenerating...".format(result.text[:40].replace("\n", " "))
+            )
+            continue
+        return result.text
+    ctx.log("  [Dedup] All attempts rejected. Skipping.")
     return None
 
 
 async def filter_images_with_vision(ctx: SequenceContext, image_urls: list[str],
                                     generated_text: str) -> list[str]:
-    """If vision check is on, drop images the model says are off-topic."""
+    """If vision check is on, drop images the model says are off-topic.
+
+    ``fetch_images_as_base64`` returns ``[(b64, mime), ...]`` pairs; the previous
+    naive ``zip`` here unpacked them as ``url, b64`` so ``b64`` was actually the
+    mime string. Every image then failed the relevance check and rephrased
+    tweets posted text-only. Unpack correctly.
+    """
     if not image_urls or not ctx.cfg.get("use_vision_image_check"):
         return image_urls
     try:
@@ -109,7 +129,8 @@ async def filter_images_with_vision(ctx: SequenceContext, image_urls: list[str],
     except Exception:
         return []
     kept: list[str] = []
-    for url, b64 in zip(image_urls, b64_list):
+    for url, pair in zip(image_urls, b64_list):
+        b64 = pair[0] if pair else ""
         if not b64:
             continue
         try:
@@ -209,6 +230,43 @@ def pick_post(pool: list[dict], target_topic: str = "",
     return random.choice(candidates[:_PICK_TOP_K])
 
 
+def _select_source(ctx: SequenceContext, pool: list[dict],
+                   topic: str = "") -> tuple[dict | None, str]:
+    """Pick a source post from ``pool`` for an action.
+
+    Strategy: strict pass first (skip already-used URLs and used handles); if
+    that comes up empty, retry without the handle filter. A user with
+    ``seq_qrt=1`` would rather see the same creator twice in a sequence than
+    have their one QRT skipped because the comments ate every handle first.
+
+    Returns ``(post, reason)`` — when ``post`` is ``None``, ``reason`` is a
+    compact diagnostic string for the caller's skip log.
+    """
+    pool_n = len(pool)
+    used_urls_n = len(ctx.used_urls)
+    used_handles_n = len(ctx.used_handles)
+
+    strict = available_posts(pool, ctx, skip_handles=True)
+    chosen = pick_post(strict, topic, exclude_handles=list(ctx.used_handles))
+    if chosen is None and strict:
+        chosen = strict[0]
+    if chosen is not None:
+        return chosen, ""
+
+    relaxed = available_posts(pool, ctx, skip_handles=False)
+    chosen = pick_post(relaxed, topic, exclude_handles=[])
+    if chosen is None and relaxed:
+        chosen = relaxed[0]
+    if chosen is not None:
+        ctx.log(
+            f"  [Pool] Strict pass empty (used_handles={used_handles_n}); "
+            "reusing a handle so this slot doesn't go to waste."
+        )
+        return chosen, ""
+
+    return None, f"pool={pool_n}, used_urls={used_urls_n}, used_handles={used_handles_n}"
+
+
 def filter_clean(posts: list[dict]) -> list[dict]:
     return [p for p in posts if not is_spam_post(p)]
 
@@ -257,12 +315,11 @@ async def do_tweet_rephrase(ctx: SequenceContext, pool: list[dict]) -> bool:
     if not S.can_act(ctx.state, ctx.cfg, "tweets"):
         ctx.log("[TweetRephrase] Skipped — daily tweets cap reached.")
         return False
-    available = available_posts(pool, ctx)
-    if not available:
-        ctx.log("[TweetRephrase] Skipped — no unused posts.")
-        return False
     topic = S.next_topic(ctx.cfg, ctx.state, ctx.enabled_topics)
-    src = pick_post(available, topic, exclude_handles=list(ctx.used_handles)) or available[0]
+    src, reason = _select_source(ctx, pool, topic)
+    if src is None:
+        ctx.log(f"[TweetRephrase] Skipped — no usable post ({reason}).")
+        return False
     src_url, src_handle = src.get("url", ""), src.get("handle", "")
     actual_topic = src.get("_topic", topic)
     ctx.log(f"[TweetRephrase] From @{src_handle} ({src.get('likes', 0)} likes) | topic={actual_topic}")
@@ -296,15 +353,80 @@ async def do_tweet_rephrase(ctx: SequenceContext, pool: list[dict]) -> bool:
     return True
 
 
+async def do_tweet_media(ctx: SequenceContext, pool: list[dict]) -> bool:
+    """Original tweet that REQUIRES attaching media from a high-engagement
+    source post.
+
+    Distinct from :func:`do_tweet_rephrase`, which uses media when the chosen
+    source happens to have it. This handler hard-filters the pool to posts
+    with images first; if nothing qualifies it skips with a clear log instead
+    of silently posting text-only.
+    """
+    if not S.can_act(ctx.state, ctx.cfg, "tweets"):
+        ctx.log("[TweetMedia] Skipped — daily tweets cap reached.")
+        return False
+    media_pool = [p for p in pool if (p.get("image_urls") or [])]
+    if not media_pool:
+        ctx.log(
+            f"[TweetMedia] Skipped — no eligible source has media "
+            f"(pool={len(pool)}, with_images=0)."
+        )
+        return False
+    topic = S.next_topic(ctx.cfg, ctx.state, ctx.enabled_topics)
+    src, reason = _select_source(ctx, media_pool, topic)
+    if src is None:
+        ctx.log(f"[TweetMedia] Skipped — no usable media post ({reason}).")
+        return False
+    src_url, src_handle = src.get("url", ""), src.get("handle", "")
+    actual_topic = src.get("_topic", topic)
+    ctx.log(
+        f"[TweetMedia] From @{src_handle} ({src.get('likes', 0)} likes) "
+        f"| topic={actual_topic} | imgs={len(src.get('image_urls') or [])}"
+    )
+    text = await generate_with_dedup(
+        ctx, generate_tweet, label="generate_tweet",
+        cfg=ctx.cfg, format_key=ctx.format_key,
+        original_tweet=src["text"],
+        length_tier=LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM"),
+        enabled_topics=ctx.enabled_topics,
+    )
+    if not text or ctx.is_cancelled():
+        return False
+    ctx.log(f"[TweetMedia] Generated ({len(text)} chars): {_truncate(text)}")
+    image_urls = await filter_images_with_vision(ctx, src.get("image_urls") or [], text)
+    if not image_urls:
+        # Vision check (if on) rejected every image. Skip rather than silently
+        # post text-only — the user opted into media tweets explicitly.
+        ctx.log("[TweetMedia] Skipped — vision check rejected all source images.")
+        return False
+    try:
+        await ctx.ext.send("post_tweet", text=text, image_urls=image_urls)
+    except Exception as e:
+        ctx.log(f"[TweetMedia] Failed: {e}")
+        await ctx.ext.safe_dismiss_compose()
+        return False
+    ctx.log(f"[TweetMedia] Posted with {len(image_urls)} image(s).")
+    ctx.used_urls.add(src_url)
+    if src_handle:
+        ctx.used_handles.add(src_handle)
+    S.record_action(ctx.state, "tweets")
+    S.remember_posted_text(ctx.state, text)
+    S.remember_source_url(ctx.state, src_url)
+    record_position_from_post(ctx, text)
+    ctx.state["last_topic_tweet"] = actual_topic
+    await ctx.persist()
+    return True
+
+
 async def do_qrt(ctx: SequenceContext, pool: list[dict]) -> bool:
     if not S.can_act(ctx.state, ctx.cfg, "qrts"):
         ctx.log("[QRT] Skipped — daily qrts cap reached.")
         return False
-    available = available_posts(pool, ctx)
-    if not available:
-        ctx.log("[QRT] Skipped — no unused posts.")
+    topic = S.next_topic(ctx.cfg, ctx.state, ctx.enabled_topics)
+    src, reason = _select_source(ctx, pool, topic)
+    if src is None:
+        ctx.log(f"[QRT] Skipped — no usable post ({reason}).")
         return False
-    src = available[0]
     src_url, src_handle = src.get("url", ""), src.get("handle", "")
     ctx.log(f"[QRT] Quoting @{src_handle}")
     await ctx.human.like_and_bookmark(src_url)
@@ -341,11 +463,11 @@ async def do_rt(ctx: SequenceContext, pool: list[dict]) -> bool:
     if not S.can_act(ctx.state, ctx.cfg, "rts"):
         ctx.log("[RT] Skipped — daily rts cap reached.")
         return False
-    available = available_posts(pool, ctx)
-    if not available:
-        ctx.log("[RT] Skipped — no unused posts.")
+    topic = S.next_topic(ctx.cfg, ctx.state, ctx.enabled_topics)
+    src, reason = _select_source(ctx, pool, topic)
+    if src is None:
+        ctx.log(f"[RT] Skipped — no usable post ({reason}).")
         return False
-    src = available[0]
     src_url, src_handle = src.get("url", ""), src.get("handle", "")
     ctx.log(f"[RT] Reposting @{src_handle}")
     try:
@@ -370,15 +492,18 @@ async def do_rt(ctx: SequenceContext, pool: list[dict]) -> bool:
 
 
 async def do_comment(ctx: SequenceContext, pool: list[dict],
-                     gen_fn=generate_reply_comment, log_prefix: str = "[Comment]") -> bool:
+                     gen_fn=None, log_prefix: str = "[Comment]") -> bool:
+    # Resolve at call-time so tests can patch the module attribute, and so a
+    # future degen / sniper variant can swap the generator with one line.
+    if gen_fn is None:
+        gen_fn = generate_reply_comment
     if not S.can_act(ctx.state, ctx.cfg, "comments"):
         ctx.log(f"{log_prefix} Skipped — daily comments cap reached.")
         return False
-    available = available_posts(pool, ctx)
-    if not available:
-        ctx.log(f"{log_prefix} Skipped — no unused posts.")
+    src, reason = _select_source(ctx, pool)
+    if src is None:
+        ctx.log(f"{log_prefix} Skipped — no usable post ({reason}).")
         return False
-    src = available[0]
     src_url, src_handle = src.get("url", ""), src.get("handle", "")
     rotation = ctx.comment_rotation or ["MEDIUM"]
     length = rotation[ctx.comment_idx] if ctx.comment_idx < len(rotation) else "MEDIUM"
@@ -433,11 +558,12 @@ async def do_thread(ctx: SequenceContext, pool: list[dict] | None = None) -> boo
     if remaining < 2:
         ctx.log(f"[Thread] Skipped — only {remaining} tweet(s) left under cap; thread needs >=2.")
         return False
-    src = (available_posts(pool, ctx) if pool else None)
-    src_post = src[0] if src else None
-    if src_post is None and pool is not None:
-        ctx.log("[Thread] Skipped — no unused posts.")
-        return False
+    src_post: dict | None = None
+    if pool is not None:
+        src_post, reason = _select_source(ctx, pool)
+        if src_post is None:
+            ctx.log(f"[Thread] Skipped — no usable post ({reason}).")
+            return False
     src_handle = src_post.get("handle", "") if src_post else ""
     src_text = src_post.get("text", "") if src_post else ""
     thread_format = S.next_thread_format(ctx.state)

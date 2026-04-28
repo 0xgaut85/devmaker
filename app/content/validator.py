@@ -63,6 +63,58 @@ def is_duplicate(
     return False
 
 
+# Number of leading NON-stopword tokens to fingerprint. 2 is the sweet spot:
+# small enough to catch stylistic opener patterns ("hot take", "pro tip", "real
+# talk") even when the rest of the post differs, but large enough to avoid
+# blocking on a single shared first word like "Postgres" or "AI".
+_OPENER_NSW_TOKENS = 2
+
+_OPENER_TOKEN_RE = re.compile(r"[a-z0-9']+")
+
+
+def _opener_fingerprint(text: str) -> tuple[str, ...]:
+    """Return the first ``_OPENER_NSW_TOKENS`` non-stopword word tokens of
+    ``text``, lowercased and punctuation-stripped.
+
+    "Hot take: postgres beats mongo" -> ("hot", "take")
+    "I think rust beats go"          -> ("think", "rust")
+    "Pro tip — always profile first" -> ("pro", "tip")
+
+    Stopword stripping is what makes the fingerprint robust to natural English
+    filler ("I", "the", "a", "is") that would otherwise inflate two unrelated
+    openers into a false match.
+    """
+    if not text:
+        return ()
+    tokens = _OPENER_TOKEN_RE.findall(text.lower())
+    out: list[str] = []
+    for t in tokens:
+        if t in _STOPWORDS:
+            continue
+        out.append(t)
+        if len(out) >= _OPENER_NSW_TOKENS:
+            break
+    return tuple(out)
+
+
+def has_repeated_opener(text: str, recent_texts: list[str]) -> bool:
+    """True when ``text`` shares its non-stopword opener fingerprint with any
+    of ``recent_texts``.
+
+    Catches the "4 'Hot take:' tweets in a row" failure mode where the body
+    content differs (so :func:`is_duplicate` passes) but the opener pattern is
+    identical. We compare against the full ``recent_texts`` list because the
+    caller already passes the trimmed last-N window.
+    """
+    fp = _opener_fingerprint(text)
+    if len(fp) < _OPENER_NSW_TOKENS:
+        return False
+    for prev in recent_texts or []:
+        if fp == _opener_fingerprint(prev):
+            return True
+    return False
+
+
 class ValidationResult:
     def __init__(self, text: str, passed: bool, reason: str = ""):
         self.text = text
@@ -249,10 +301,12 @@ def validate_and_fix(
         if len(text) < 30 and "?" not in text:
             return ValidationResult(text, False, f"Too short to have substance: {len(text)} chars")
 
-    if length_tier and length_tier in ("MEDIUM", "LONG", "XL"):
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        if len(sentences) > 2 and "\n" not in text:
-            text = "\n\n".join(sentences)
+    # NOTE: We deliberately do NOT auto-inject "\n\n" between sentences here.
+    # The previous version did, which forced every multi-sentence MEDIUM/LONG/XL
+    # post into the same "sentence\n\nsentence\n\nsentence" layout — readers
+    # could spot the bot at a glance just by scrolling. The prompt now picks a
+    # random visual structure per generation (see prompts._structure_block);
+    # respect what the LLM produces instead of overriding it.
 
     _LENGTH_SLACK = 40
     if length_tier and length_tier in LENGTH_TIERS:

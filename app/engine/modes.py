@@ -56,6 +56,22 @@ def _format_gate_stats(eligible) -> str:
     )
 
 
+def _format_budget(ctx: SequenceContext) -> str:
+    """Human-readable used/cap line for every action type.
+
+    Surfaces silent-skip causes at the top of every sequence: if the user sees
+    ``qrts=5/5`` they know the cap is the reason their QRT didn't fire, and
+    if they see ``qrts=0/0`` they know seq_qrts is set to 0 (or wasn't saved).
+    """
+    caps = S.daily_caps_for(ctx.cfg)
+    counts = S.today_counts(ctx.state)
+    parts = [
+        f"{k}={counts.get(k, 0)}/{cap}"
+        for k, cap in caps.items()
+    ]
+    return ", ".join(parts)
+
+
 async def _scrape_eligible_pool(ctx: SequenceContext) -> list[dict]:
     """One canonical timeline scrape used by every text/comment/qrt mode.
 
@@ -121,6 +137,7 @@ async def run_dev_sequence(ctx: SequenceContext) -> bool:
     ctx.seq_num = int(ctx.state.get("sequence_number", 0)) + 1
     fmt_name = FORMAT_CATALOG.get(ctx.format_key, {}).get("name", ctx.format_key)
     ctx.log(f"=== DEV SEQUENCE {ctx.seq_num} | Format: {ctx.format_key} ({fmt_name}) ===")
+    ctx.log(f"[Budget] today: {_format_budget(ctx)}")
 
     pool = await _scrape_eligible_pool(ctx)
     if len(pool) < TIMELINE_MIN_ELIGIBLE:
@@ -144,10 +161,17 @@ async def run_dev_sequence(ctx: SequenceContext) -> bool:
     actions = build_dev_action_plan(ctx.cfg)
     ctx.log(f"[Plan] {summarize_plan(actions)}")
 
+    requested: dict[str, int] = {}
+    actual: dict[str, int] = {}
+    for a in actions:
+        requested[a] = requested.get(a, 0) + 1
+
     for action in actions:
         if ctx.is_cancelled():
             return False
-        await _dispatch_dev_action(ctx, action, pool)
+        success = await _dispatch_dev_action(ctx, action, pool)
+        if success:
+            actual[action] = actual.get(action, 0) + 1
         if ctx.is_cancelled():
             return False
         if random.random() < 0.4:
@@ -158,28 +182,54 @@ async def run_dev_sequence(ctx: SequenceContext) -> bool:
     ctx.state["last_format"] = ctx.format_key
     ctx.state["last_comment_rotation"] = ctx.comment_rotation
     await ctx.persist()
+    ctx.log(f"[Summary] {_format_action_summary(requested, actual)}")
     ctx.log(f"=== DEV SEQUENCE {ctx.seq_num} COMPLETE ===")
     return True
 
 
-async def _dispatch_dev_action(ctx: SequenceContext, action: str, pool: list[dict]) -> None:
-    """Single dispatch table — keep all action wiring in one place."""
+def _format_action_summary(requested: dict[str, int], actual: dict[str, int]) -> str:
+    """Human-readable 'requested vs actual' line so missed actions are obvious.
+
+    Renders ``qrt 0/2`` when the planner asked for 2 QRTs but neither fired,
+    making "set seq_qrts=2 but no quote retweet happened" diagnosable from
+    the log alone instead of requiring code archaeology.
+    """
+    if not requested:
+        return "no actions planned."
+    parts = []
+    for key in sorted(requested.keys()):
+        a = actual.get(key, 0)
+        r = requested[key]
+        marker = "" if a == r else "  <-- MISSED"
+        parts.append(f"{key} {a}/{r}{marker}")
+    return "actual / planned -> " + ", ".join(parts)
+
+
+async def _dispatch_dev_action(ctx: SequenceContext, action: str, pool: list[dict]) -> bool:
+    """Single dispatch table — keep all action wiring in one place.
+
+    Returns True when the underlying handler reported success (action
+    actually fired), False when it skipped or failed. Callers use this to
+    track requested-vs-actual counts for the end-of-sequence summary log.
+    """
     if action == "tweet_text":
-        await A.do_tweet_text(ctx)
-    elif action == "tweet_rephrase":
-        await A.do_tweet_rephrase(ctx, pool)
-    elif action == "qrt":
-        await A.do_qrt(ctx, pool)
-    elif action == "rt":
-        await A.do_rt(ctx, pool)
-    elif action == "comment":
-        await A.do_comment(ctx, pool)
-    elif action == "follow":
-        await A.do_follow_one(ctx, pool)
-    elif action == "thread":
-        await A.do_thread(ctx, pool)
-    else:
-        ctx.log(f"[Plan] Unknown action '{action}', skipping.")
+        return await A.do_tweet_text(ctx)
+    if action == "tweet_rephrase":
+        return await A.do_tweet_rephrase(ctx, pool)
+    if action == "tweet_media":
+        return await A.do_tweet_media(ctx, pool)
+    if action == "qrt":
+        return await A.do_qrt(ctx, pool)
+    if action == "rt":
+        return await A.do_rt(ctx, pool)
+    if action == "comment":
+        return await A.do_comment(ctx, pool)
+    if action == "follow":
+        return await A.do_follow_one(ctx, pool)
+    if action == "thread":
+        return await A.do_thread(ctx, pool)
+    ctx.log(f"[Plan] Unknown action '{action}', skipping.")
+    return False
 
 
 # --------------------------------------------------------------------------- #

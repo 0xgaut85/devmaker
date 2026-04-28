@@ -1,5 +1,7 @@
 """Dynamic system prompt builder. Injects user voice + built-in rules."""
 
+import random
+
 from app.content.rules import (
     GRAMMAR_RULES,
     REPLY_GRAMMAR_RULES,
@@ -9,6 +11,117 @@ from app.content.rules import (
     LENGTH_TIERS,
     THREAD_FORMAT_CATALOG,
 )
+
+
+# --------------------------------------------------------------------------- #
+#  Visual structure picker                                                    #
+#                                                                             #
+#  The single biggest "this is a bot" tell we shipped was: every multi-       #
+#  sentence post came out as "sentence\n\nsentence\n\nsentence". A reader     #
+#  could spot the bot just by scrolling, before reading a single word. The    #
+#  fix is to pick ONE concrete visual structure per generation — weighted by  #
+#  format/length so it still makes sense — and inject it into the prompt as   #
+#  an explicit instruction the LLM follows, instead of letting the model      #
+#  default to its own training-data favourite (which is sentence-per-line).   #
+# --------------------------------------------------------------------------- #
+
+_STRUCTURES: dict[str, str] = {
+    "single_line":
+        "STRUCTURE: One flowing sentence (or two short sentences run together). "
+        "NO line breaks at all. NO blank lines.",
+    "flowing_paragraph":
+        "STRUCTURE: 2-3 sentences flowing together as ONE paragraph. "
+        "Use periods and commas. Do NOT put each sentence on its own line. "
+        "The whole post is one block of text.",
+    "two_paragraphs":
+        "STRUCTURE: Exactly TWO paragraphs separated by ONE blank line. "
+        "Each paragraph is 1-3 sentences flowing together (NO internal line breaks within a paragraph). "
+        "Think: setup paragraph, then payoff paragraph.",
+    "line_broken":
+        "STRUCTURE: Each sentence on its own line, with a blank line between them. "
+        "Use this format ONLY for this post — it is a deliberate punch-up rhythm, not a default.",
+    "multi_paragraph":
+        "STRUCTURE: 3+ paragraphs separated by blank lines. "
+        "Each paragraph is a coherent thought unit (NOT a single sentence). "
+        "Sentences inside a paragraph flow together with periods and commas, not line breaks.",
+}
+
+# Per-format weights. A format with strong inherent layout (numbered list,
+# one-liner) pins to one structure; flexible formats spread across several so
+# the timeline doesn't read as a template.
+_FORMAT_STRUCTURE_WEIGHTS: dict[str, dict[str, float]] = {
+    "A": {"single_line": 0.9, "flowing_paragraph": 0.1},          # Short punch
+    "B": {"line_broken": 0.85, "two_paragraphs": 0.15},           # Numbered list
+    "C": {"flowing_paragraph": 0.45, "two_paragraphs": 0.30, "single_line": 0.15, "line_broken": 0.10},
+    "D": {"flowing_paragraph": 0.40, "two_paragraphs": 0.30, "single_line": 0.20, "line_broken": 0.10},
+    "E": {"flowing_paragraph": 0.40, "two_paragraphs": 0.30, "single_line": 0.20, "line_broken": 0.10},
+    "F": {"multi_paragraph": 0.55, "two_paragraphs": 0.40, "line_broken": 0.05},  # Long reflection
+    "G": {"line_broken": 0.65, "two_paragraphs": 0.35},           # Bullet list with intro
+    "H": {"single_line": 1.0},                                    # One-liner mic drop
+    "I": {"two_paragraphs": 0.40, "flowing_paragraph": 0.40, "line_broken": 0.20},  # Comparison
+    "J": {"single_line": 0.50, "flowing_paragraph": 0.40, "line_broken": 0.10},     # Practical tip
+    "K": {"flowing_paragraph": 0.40, "two_paragraphs": 0.30, "single_line": 0.20, "line_broken": 0.10},
+    "L": {"flowing_paragraph": 0.40, "two_paragraphs": 0.40, "line_broken": 0.20},
+}
+
+# Degen formats — same idea, sized to match each format's natural shape.
+_DEGEN_STRUCTURE_WEIGHTS: dict[str, dict[str, float]] = {
+    "DA": {"single_line": 0.7, "flowing_paragraph": 0.3},
+    "DB": {"single_line": 0.5, "flowing_paragraph": 0.5},
+    "DC": {"single_line": 0.7, "flowing_paragraph": 0.3},
+    "DD": {"flowing_paragraph": 0.5, "two_paragraphs": 0.3, "single_line": 0.2},
+    "DE": {"single_line": 0.4, "flowing_paragraph": 0.5, "two_paragraphs": 0.1},
+    "DF": {"flowing_paragraph": 0.5, "single_line": 0.3, "two_paragraphs": 0.2},
+    "DG": {"multi_paragraph": 0.5, "two_paragraphs": 0.5},
+    "DH": {"single_line": 1.0},
+}
+
+# Length-based weights for actions that don't have a format key (replies,
+# quote comments). Same names as _STRUCTURES.
+_LENGTH_STRUCTURE_WEIGHTS: dict[str, dict[str, float]] = {
+    "SHORT":  {"single_line": 0.75, "flowing_paragraph": 0.25},
+    "MEDIUM": {"flowing_paragraph": 0.55, "single_line": 0.20, "two_paragraphs": 0.20, "line_broken": 0.05},
+    "LONG":   {"two_paragraphs": 0.45, "flowing_paragraph": 0.30, "multi_paragraph": 0.15, "line_broken": 0.10},
+    "XL":     {"multi_paragraph": 0.55, "two_paragraphs": 0.35, "flowing_paragraph": 0.10},
+}
+
+
+def _weighted_pick(weights: dict[str, float]) -> str:
+    """Pick one key from ``weights`` according to the given probabilities.
+
+    Returns ``"flowing_paragraph"`` as a safe default if ``weights`` is empty
+    so callers never get a KeyError.
+    """
+    if not weights:
+        return "flowing_paragraph"
+    keys = list(weights.keys())
+    probs = list(weights.values())
+    return random.choices(keys, weights=probs, k=1)[0]
+
+
+def _structure_block(format_key: str | None = None,
+                     length_tier: str | None = None,
+                     degen: bool = False) -> str:
+    """Pick a random visual structure for this generation and render it as a
+    prompt instruction.
+
+    Resolution order: ``format_key`` -> ``length_tier`` -> generic default.
+    Pass ``degen=True`` to use the degen-format weight table when ``format_key``
+    is a degen format key (DA, DB, ...).
+    """
+    table = _DEGEN_STRUCTURE_WEIGHTS if degen else _FORMAT_STRUCTURE_WEIGHTS
+    weights: dict[str, float] | None = None
+    if format_key and format_key in table:
+        weights = table[format_key]
+    elif length_tier and length_tier in _LENGTH_STRUCTURE_WEIGHTS:
+        weights = _LENGTH_STRUCTURE_WEIGHTS[length_tier]
+    structure = _weighted_pick(weights or {
+        "flowing_paragraph": 0.5,
+        "two_paragraphs": 0.25,
+        "single_line": 0.15,
+        "line_broken": 0.10,
+    })
+    return _STRUCTURES[structure]
 
 
 def _reply_length_caps(length_tier: str) -> str:
@@ -183,6 +296,7 @@ def build_tweet_rephrase_prompt(
 ) -> tuple[str, str]:
     cfg = cfg or {}
     fmt = FORMAT_CATALOG[format_key]
+    structure = _structure_block(format_key=format_key)
     system = f"""You are writing social media posts for X (Twitter).
 
 VOICE — write exactly like this person:
@@ -195,6 +309,8 @@ VOICE — write exactly like this person:
 {_dodont_block(dev_do, dev_dont)}FORMAT for this post: {fmt['name']}
 {fmt['desc']}
 
+{structure}
+
 {_examples_block(bad_examples, good_examples)}
 {_recent_posts_block(recent_posts)}
 CRITICAL RULES:
@@ -203,7 +319,7 @@ CRITICAL RULES:
 - NEVER reference "this", "that", or "the original" as if reacting to another post. You are NOT replying.
 - Do NOT start with "honestly", "this is", "that's", or "so true".
 - NEVER use em dashes (— or –). Use commas or periods instead.
-- Use line breaks between sentences (each sentence on its own line with a blank line gap).
+- FOLLOW THE STRUCTURE block above exactly. Do not default to "one sentence per line" unless the structure says so.
 - Include at least one SPECIFIC detail (a tool name, a number, a scenario, a concrete example).
 - NEVER claim you built, shipped, or launched anything. No fake personal projects.
 - Share opinions, observations, questions, or commentary. Not fabricated stories.
@@ -231,6 +347,9 @@ def build_quote_comment_prompt(
 ) -> tuple[str, str]:
     cfg = cfg or {}
     img_note = "\n- The tweet includes images. Look at them to understand memes, screenshots, charts, or visual jokes." if has_images else ""
+    # Quote comments are typically 1-3 sentences, so bias toward SHORT/MEDIUM
+    # structures (single line or one flowing paragraph).
+    structure = _structure_block(length_tier="SHORT" if random.random() < 0.6 else "MEDIUM")
     system = f"""You are writing a quote retweet comment for X (Twitter).
 
 VOICE — write exactly like this person:
@@ -241,10 +360,13 @@ VOICE — write exactly like this person:
 {ANTI_SLOP_RULES}
 
 {_dodont_block(dev_do, dev_dont)}{_examples_block(bad_examples, good_examples)}
+{structure}
+
 {_recent_posts_block(recent_posts)}
 CRITICAL RULES:
 - Output ONLY the quote comment text. No quotes, no labels.
 - Keep it 1-3 sentences. Smart, adds something new. Not generic praise.
+- FOLLOW THE STRUCTURE block above exactly. Do not put each sentence on its own line unless the structure says so.
 - Do NOT start with "honestly", "this is", "that's", "great point", or "so true".
 - NEVER use em dashes (— or –).
 - Add a SPECIFIC opinion or counterpoint. Include a concrete detail.
@@ -282,6 +404,7 @@ def build_reply_comment_prompt(
         post_type_block = f"\nPOST TYPE: {post_type}\nREPLY STRATEGY: {reply_strategy}\n"
     img_note = "\n- The tweet includes images. Use them to understand memes, screenshots, charts, or visual context." if has_images else ""
 
+    structure = _structure_block(length_tier=length_tier)
     system = f"""You are writing a reply comment on X (Twitter).
 
 VOICE — write exactly like this person:
@@ -292,6 +415,8 @@ VOICE — write exactly like this person:
 {ANTI_SLOP_RULES}
 
 {_dodont_block(dev_do, dev_dont)}{_examples_block(bad_examples, good_examples)}
+{structure}
+
 {_recent_posts_block(recent_posts)}{post_type_block}{_existing_replies_block(existing_replies)}{_positions_block(positions)}
 LENGTH: {length_tier} ({tier['desc']}) — target {tier['min']}-{tier['max']} characters.
 {_reply_length_caps(length_tier)}
@@ -299,6 +424,7 @@ TONE: {tone.replace('_', ' ')}
 
 CRITICAL RULES:
 - Output ONLY the comment text. No quotes, no labels.
+- FOLLOW THE STRUCTURE block above exactly. Do not put each sentence on its own line unless the structure says so.
 - Do NOT start with "honestly", "this is", "that's", "great point", "so true", "needed this".
 - NEVER use em dashes (— or –). Use commas or periods.
 - Add a SPECIFIC opinion or example. No generic reactions.
@@ -343,6 +469,7 @@ def build_degen_tweet_prompt(
     recent_posts: list[str] | None = None,
 ) -> tuple[str, str]:
     fmt = DEGEN_FORMAT_CATALOG[format_key]
+    structure = _structure_block(format_key=format_key, degen=True)
     system = f"""You are a crypto Twitter (CT) poster writing posts for X.
 
 VOICE:
@@ -350,6 +477,8 @@ VOICE:
 
 {_dodont_block(degen_do, degen_dont)}FORMAT for this post: {fmt['name']}
 {fmt['desc']}
+
+{structure}
 {_recent_posts_block(recent_posts)}
 RULES:
 - Output ONLY the final post text. No quotes, no labels, no explanation.
@@ -357,7 +486,7 @@ RULES:
 - Use crypto slang naturally but don't force it.
 - Reference specific tokens, protocols, or narratives when relevant.
 - Tickers use $ prefix ($BTC, $ETH, $SOL).
-- Keep line breaks between sentences.
+- FOLLOW THE STRUCTURE block above exactly. Do NOT default to one-sentence-per-line.
 - NEVER use em dashes. Use commas or periods.
 - No hashtags unless they're part of the culture (like a ticker).
 """
@@ -377,15 +506,19 @@ def build_degen_quote_comment_prompt(
     degen_do: str = "", degen_dont: str = "",
     recent_posts: list[str] | None = None,
 ) -> tuple[str, str]:
+    structure = _structure_block(length_tier="SHORT" if random.random() < 0.6 else "MEDIUM")
     system = f"""You are writing a quote retweet comment on crypto Twitter (X).
 
 VOICE:
 {_degen_voice_block(voice)}
 
-{_dodont_block(degen_do, degen_dont)}{_recent_posts_block(recent_posts)}
+{_dodont_block(degen_do, degen_dont)}{structure}
+
+{_recent_posts_block(recent_posts)}
 RULES:
 - Output ONLY the quote comment text.
 - 1-3 sentences. Add real alpha, a take, or a funny reaction.
+- FOLLOW THE STRUCTURE block above exactly.
 - Sound like CT, not a news outlet.
 - Use tickers with $ prefix when mentioning coins.
 - NEVER use em dashes.
@@ -413,6 +546,7 @@ def build_degen_reply_prompt(
     if post_type and reply_strategy:
         post_type_block = f"\nPOST TYPE: {post_type}\nREPLY STRATEGY: {reply_strategy}\n"
 
+    structure = _structure_block(length_tier=length_tier)
     system = f"""You are replying to a post on crypto Twitter (X).
 
 VOICE:
@@ -421,9 +555,12 @@ VOICE:
 LENGTH: {length_tier} ({tier['desc']}) — target {tier['min']}-{tier['max']} characters.
 TONE: {tone.replace('_', ' ')}
 
+{structure}
+
 {_dodont_block(degen_do, degen_dont)}{_recent_posts_block(recent_posts)}{post_type_block}{_existing_replies_block(existing_replies)}{_positions_block(positions)}
 RULES:
 - Output ONLY the comment text.
+- FOLLOW THE STRUCTURE block above exactly.
 - Sound like a real CT participant. Use crypto slang where natural.
 - Add a real take, alpha, or reaction. No filler.
 - Use $ prefix for tickers.
@@ -472,6 +609,12 @@ THREAD RULES:
 - Each tweet must stand alone but also flow as part of the thread.
 - Output ONLY the tweets separated by ---. No numbering, no labels, no explanation.
 - NEVER use em dashes (— or –). Use commas or periods instead.
+
+VISUAL STRUCTURE (vary it WITHIN the thread):
+- The HOOK should be one short flowing line, NOT broken across lines.
+- Body tweets should each pick a DIFFERENT structure: some flowing paragraphs (no internal breaks), some 1-2 short sentences run together, occasionally one with a deliberate line-break beat.
+- Do NOT make every tweet "sentence\\n\\nsentence\\n\\nsentence" — that pattern is the easiest bot tell at a glance.
+- The CLOSER is usually a single punchy line.
 """
     user = f"""Create a thread inspired by this high-engagement tweet.
 Take the core idea and expand it into a full thread with your own angle.

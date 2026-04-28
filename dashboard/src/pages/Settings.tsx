@@ -7,6 +7,7 @@ export default function Settings() {
   const [config, setConfig] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
@@ -19,12 +20,18 @@ export default function Settings() {
   async function save() {
     if (!accountId || !config) return;
     setSaving(true);
+    setSaveError("");
     try {
       await api.config.update(accountId, config);
+      // Re-fetch so derived totals (daily_max_*) reflect the new seq_* values
+      // immediately instead of staying stale until the user reloads.
+      const fresh = await api.config.get(accountId);
+      setConfig(fresh);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setSaveError(err?.message || "Save failed");
     } finally {
       setSaving(false);
     }
@@ -37,6 +44,8 @@ export default function Settings() {
   if (loadError) return <div className="text-red-400 text-sm">Error: {loadError}</div>;
   if (!config) return <div className="text-neutral-500 text-sm">Loading...</div>;
 
+  const mode = config.farming_mode || "dev";
+
   return (
     <div>
       <div className="flex items-center gap-4 mb-6">
@@ -45,8 +54,9 @@ export default function Settings() {
       </div>
 
       <div className="space-y-8">
-        <Section title="Mode">
-          <Select label="Farming Mode" value={config.farming_mode} onChange={(v) => update("farming_mode", v)}
+        {/* 1. MODE — top-level switch */}
+        <Section title="Mode" subtitle="Pick the farming mode. Sections below adapt to the mode you choose.">
+          <Select label="Farming Mode" value={mode} onChange={(v) => update("farming_mode", v)}
             options={["dev", "degen", "rt_farm", "sniper"]} />
           <Toggle label="Use Following Tab" value={config.use_following_tab ?? true} onChange={(v) => update("use_following_tab", v)} />
           <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Scrape from "Following" instead of "For You". Better for fresh accounts with curated follows.</p>
@@ -56,7 +66,99 @@ export default function Settings() {
           <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">When on, the topic classifier will not assign categories to political or geopolitical posts (reduces algo doom-scroll). Off only if you intentionally engage in that space.</p>
         </Section>
 
-        <Section title="LLM">
+        {/* 2. SEQUENCE COMPOSITION — most-tuned setting */}
+        {(mode === "dev" || mode === "degen") && (
+          <Section title="Sequence Composition" subtitle="Exact actions per sequence. Daily totals derive from these. Rare specialty actions (threads, media, rephrase, qrt) run before bulk comments so they always get a fresh post pool.">
+            <Number label="Original tweets (text)" value={config.seq_text_tweets} onChange={(v) => update("seq_text_tweets", v)} />
+            <Number label="Rephrased tweets" value={config.seq_rephrase_tweets} onChange={(v) => update("seq_rephrase_tweets", v)} />
+            <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Take a popular post + its media (if present) and rewrite it in your voice.</p>
+            <Number label="Media tweets" value={config.seq_media_tweets} onChange={(v) => update("seq_media_tweets", v)} />
+            <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Original tweet that REQUIRES attaching media from a source post. Skips with a clear log if no eligible source has images.</p>
+            <Number label="Quote retweets" value={config.seq_qrts} onChange={(v) => update("seq_qrts", v)} />
+            <Number label="Retweets" value={config.seq_rts} onChange={(v) => update("seq_rts", v)} />
+            <Number label="Comments" value={config.seq_comments} onChange={(v) => update("seq_comments", v)} />
+            <Number label="Follows" value={config.seq_follows} onChange={(v) => update("seq_follows", v)} />
+            <Number label="Threads" value={config.seq_threads} onChange={(v) => update("seq_threads", v)} />
+            <DerivedTotals config={config} />
+          </Section>
+        )}
+
+        {/* 3. TOPICS — what content the bot engages with */}
+        {(mode === "dev" || mode === "sniper") && (
+          <Section title="Topics" subtitle="Add topics and set weight (1-5). Only posts matching these topics will be used. Click the red × to remove.">
+            <TopicsPicker value={config.topics || {}} onChange={(v) => update("topics", v)} preset={TOPICS_GENERAL} />
+          </Section>
+        )}
+
+        {mode === "degen" && (
+          <Section title="Degen Topics" subtitle="Topics for degen farming mode.">
+            <TopicsPicker value={config.degen_topics || {}} onChange={(v) => update("degen_topics", v)} preset={TOPICS_DEGEN} />
+          </Section>
+        )}
+
+        {/* 4. VOICE — high impact on output quality */}
+        {mode === "dev" && (
+          <Section title="Voice" subtitle="Voice + Don't are enforced after generation. 'no emojis at all', 'no hashtags', etc. become hard rules.">
+            <TextArea label="Voice Description" value={config.voice_description} onChange={(v) => update("voice_description", v)} />
+            <TextArea label="Do" value={config.dev_do} onChange={(v) => update("dev_do", v)} />
+            <TextArea label="Don't" value={config.dev_dont} onChange={(v) => update("dev_dont", v)} />
+            <TextArea label="Bad Examples" value={config.bad_examples} onChange={(v) => update("bad_examples", v)} />
+            <TextArea label="Good Examples" value={config.good_examples} onChange={(v) => update("good_examples", v)} />
+          </Section>
+        )}
+
+        {mode === "degen" && (
+          <Section title="Degen Voice">
+            <TextArea label="Degen Voice" value={config.degen_voice_description} onChange={(v) => update("degen_voice_description", v)} />
+            <TextArea label="Do" value={config.degen_do} onChange={(v) => update("degen_do", v)} />
+            <TextArea label="Don't" value={config.degen_dont} onChange={(v) => update("degen_dont", v)} />
+          </Section>
+        )}
+
+        {/* 5. PERSONALITY — voice fine-tuning */}
+        {(mode === "dev" || mode === "degen") && (
+          <Section title="Personality" subtitle="Shape the account's unique voice. These traits influence how the LLM generates content.">
+            <Slider label="Humor" sublabel="Serious → Witty" value={config.personality_humor} onChange={(v) => update("personality_humor", v)} />
+            <Slider label="Sarcasm" sublabel="Earnest → Sarcastic" value={config.personality_sarcasm} onChange={(v) => update("personality_sarcasm", v)} />
+            <Slider label="Confidence" sublabel="Humble → Bold" value={config.personality_confidence} onChange={(v) => update("personality_confidence", v)} />
+            <Slider label="Warmth" sublabel="Detached → Friendly" value={config.personality_warmth} onChange={(v) => update("personality_warmth", v)} />
+            <Slider label="Controversy" sublabel="Safe → Provocative" value={config.personality_controversy} onChange={(v) => update("personality_controversy", v)} />
+            <Slider label="Intellect" sublabel="Casual → Analytical" value={config.personality_intellect} onChange={(v) => update("personality_intellect", v)} />
+            <Slider label="Brevity" sublabel="Verbose → Punchy" value={config.personality_brevity} onChange={(v) => update("personality_brevity", v)} />
+            <Slider label="Edginess" sublabel="Wholesome → Raw" value={config.personality_edginess} onChange={(v) => update("personality_edginess", v)} />
+          </Section>
+        )}
+
+        {/* 6. ACTIVE HOURS + 7. TIMING — when and how often */}
+        <Section title="Active Hours" subtitle="Restrict the bot to specific local hours. Off = run 24/7.">
+          <Toggle label="Enabled" value={config.active_hours_enabled} onChange={(v) => update("active_hours_enabled", v)} />
+          <Number label="Start Hour (0-23)" value={config.active_hours_start} onChange={(v) => update("active_hours_start", Math.max(0, Math.min(23, v)))} />
+          <Number label="End Hour (0-24)" value={config.active_hours_end} onChange={(v) => update("active_hours_end", Math.max(0, Math.min(24, v)))} />
+          <Field label="Timezone (IANA)" value={config.active_hours_timezone} onChange={(v) => update("active_hours_timezone", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">e.g. "America/New_York", "Europe/Paris", "UTC".</p>
+        </Section>
+
+        <Section title="Timing" subtitle="Pacing knobs. Lower = more aggressive / less human-looking.">
+          <Number label="Action Delay (s)" value={config.action_delay_seconds} onChange={(v) => update("action_delay_seconds", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Floor for the random pause between actions inside a sequence.</p>
+          <Number label="Sequence Delay (min)" value={config.sequence_delay_minutes} onChange={(v) => update("sequence_delay_minutes", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Wait between sequences when running a multi-sequence batch.</p>
+          <Number label="Min Engagement Likes" value={config.min_engagement_likes} onChange={(v) => update("min_engagement_likes", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Posts with fewer likes than this are filtered out before topic classification.</p>
+        </Section>
+
+        {/* 8. INTELLIGENCE — opt-in advanced */}
+        <Section title="Intelligence" subtitle="Optional LLM-powered enhancements. Each adds latency + token cost.">
+          <Toggle label="LLM Topic Classification" value={config.use_llm_classification} onChange={(v) => update("use_llm_classification", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">When on, the LLM picks the topic for each timeline post. When off, fast keyword matcher runs instead.</p>
+          <Toggle label="Vision Image Check" value={config.use_vision_image_check} onChange={(v) => update("use_vision_image_check", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Use vision model to verify source images are relevant before reposting media. Slow.</p>
+          <Toggle label="Position Memory" value={config.position_memory_enabled} onChange={(v) => update("position_memory_enabled", v)} />
+          <p className="text-[10px] text-neutral-600 ml-[172px] -mt-1">Track stances you've taken so future posts stay consistent.</p>
+        </Section>
+
+        {/* 9. LLM — credentials, set once */}
+        <Section title="LLM" subtitle="Credentials and model choice. Usually set once.">
           <Select label="Provider" value={config.llm_provider} onChange={(v) => update("llm_provider", v)}
             options={["openai", "anthropic"]} />
           <Field label="OpenAI API Key" value={config.openai_api_key} onChange={(v) => update("openai_api_key", v)} type="password" />
@@ -65,85 +167,24 @@ export default function Settings() {
           <Field label="Anthropic Model" value={config.anthropic_model} onChange={(v) => update("anthropic_model", v)} />
         </Section>
 
-        <Section title="Voice" subtitle="Voice + Don't are enforced after generation. 'no emojis at all', 'no hashtags', etc. become hard rules.">
-          <TextArea label="Voice Description" value={config.voice_description} onChange={(v) => update("voice_description", v)} />
-          <TextArea label="Do" value={config.dev_do} onChange={(v) => update("dev_do", v)} />
-          <TextArea label="Don't" value={config.dev_dont} onChange={(v) => update("dev_dont", v)} />
-          <TextArea label="Bad Examples" value={config.bad_examples} onChange={(v) => update("bad_examples", v)} />
-          <TextArea label="Good Examples" value={config.good_examples} onChange={(v) => update("good_examples", v)} />
-        </Section>
+        {/* 10. MODE-SPECIFIC */}
+        {mode === "rt_farm" && (
+          <Section title="RT Farm" subtitle="Bulk-retweet a target account's recent posts.">
+            <Field label="Target Handle" value={config.rt_farm_target_handle} onChange={(v) => update("rt_farm_target_handle", v)} />
+            <Number label="Delay (seconds)" value={config.rt_farm_delay_seconds} onChange={(v) => update("rt_farm_delay_seconds", v)} />
+            <Number label="Max Scrolls" value={config.rt_farm_max_scrolls} onChange={(v) => update("rt_farm_max_scrolls", v)} />
+          </Section>
+        )}
 
-        <Section title="Topics">
-          <p className="text-xs text-neutral-500 mb-3">Add topics and set weight (1-5). Only posts matching these topics will be used. Click the red × to remove.</p>
-          <TopicsPicker value={config.topics || {}} onChange={(v) => update("topics", v)} preset={TOPICS_GENERAL} />
-        </Section>
-
-        <Section title="Degen Voice">
-          <TextArea label="Degen Voice" value={config.degen_voice_description} onChange={(v) => update("degen_voice_description", v)} />
-          <TextArea label="Do" value={config.degen_do} onChange={(v) => update("degen_do", v)} />
-          <TextArea label="Don't" value={config.degen_dont} onChange={(v) => update("degen_dont", v)} />
-        </Section>
-
-        <Section title="Degen Topics">
-          <p className="text-xs text-neutral-500 mb-3">Topics for degen farming mode.</p>
-          <TopicsPicker value={config.degen_topics || {}} onChange={(v) => update("degen_topics", v)} preset={TOPICS_DEGEN} />
-        </Section>
-
-        <Section title="RT Farm">
-          <Field label="Target Handle" value={config.rt_farm_target_handle} onChange={(v) => update("rt_farm_target_handle", v)} />
-          <Number label="Delay (seconds)" value={config.rt_farm_delay_seconds} onChange={(v) => update("rt_farm_delay_seconds", v)} />
-          <Number label="Max Scrolls" value={config.rt_farm_max_scrolls} onChange={(v) => update("rt_farm_max_scrolls", v)} />
-        </Section>
-
-        <Section title="Sniper">
-          <Toggle label="Enabled" value={config.sniper_enabled} onChange={(v) => update("sniper_enabled", v)} />
-          <Number label="Scan Interval (min)" value={config.sniper_scan_interval_minutes} onChange={(v) => update("sniper_scan_interval_minutes", v)} />
-          <Number label="Min Velocity" value={config.sniper_min_velocity} onChange={(v) => update("sniper_min_velocity", v)} />
-          <Number label="Max Replies on Post" value={config.sniper_max_replies} onChange={(v) => update("sniper_max_replies", v)} />
-          <Number label="Replies per Scan" value={config.sniper_replies_per_scan} onChange={(v) => update("sniper_replies_per_scan", v)} />
-        </Section>
-
-        <Section title="Personality">
-          <p className="text-xs text-neutral-500 mb-3">Shape the account's unique voice. These traits influence how the LLM generates content.</p>
-          <Slider label="Humor" sublabel="Serious → Witty" value={config.personality_humor} onChange={(v) => update("personality_humor", v)} />
-          <Slider label="Sarcasm" sublabel="Earnest → Sarcastic" value={config.personality_sarcasm} onChange={(v) => update("personality_sarcasm", v)} />
-          <Slider label="Confidence" sublabel="Humble → Bold" value={config.personality_confidence} onChange={(v) => update("personality_confidence", v)} />
-          <Slider label="Warmth" sublabel="Detached → Friendly" value={config.personality_warmth} onChange={(v) => update("personality_warmth", v)} />
-          <Slider label="Controversy" sublabel="Safe → Provocative" value={config.personality_controversy} onChange={(v) => update("personality_controversy", v)} />
-          <Slider label="Intellect" sublabel="Casual → Analytical" value={config.personality_intellect} onChange={(v) => update("personality_intellect", v)} />
-          <Slider label="Brevity" sublabel="Verbose → Punchy" value={config.personality_brevity} onChange={(v) => update("personality_brevity", v)} />
-          <Slider label="Edginess" sublabel="Wholesome → Raw" value={config.personality_edginess} onChange={(v) => update("personality_edginess", v)} />
-        </Section>
-
-        <Section title="Intelligence">
-          <Toggle label="LLM Classification" value={config.use_llm_classification} onChange={(v) => update("use_llm_classification", v)} />
-          <Toggle label="Vision Image Check" value={config.use_vision_image_check} onChange={(v) => update("use_vision_image_check", v)} />
-          <Toggle label="Position Memory" value={config.position_memory_enabled} onChange={(v) => update("position_memory_enabled", v)} />
-        </Section>
-
-        <Section title="Sequence Composition" subtitle="Exact actions per sequence. Daily totals derive from these.">
-          <Number label="Original tweets (text)" value={config.seq_text_tweets} onChange={(v) => update("seq_text_tweets", v)} />
-          <Number label="Rephrased tweets" value={config.seq_rephrase_tweets} onChange={(v) => update("seq_rephrase_tweets", v)} />
-          <Number label="Comments" value={config.seq_comments} onChange={(v) => update("seq_comments", v)} />
-          <Number label="Quote retweets" value={config.seq_qrts} onChange={(v) => update("seq_qrts", v)} />
-          <Number label="Retweets" value={config.seq_rts} onChange={(v) => update("seq_rts", v)} />
-          <Number label="Follows" value={config.seq_follows} onChange={(v) => update("seq_follows", v)} />
-          <Number label="Threads" value={config.seq_threads} onChange={(v) => update("seq_threads", v)} />
-          <DerivedTotals config={config} />
-        </Section>
-
-        <Section title="Active Hours">
-          <Toggle label="Enabled" value={config.active_hours_enabled} onChange={(v) => update("active_hours_enabled", v)} />
-          <Number label="Start Hour" value={config.active_hours_start} onChange={(v) => update("active_hours_start", v)} />
-          <Number label="End Hour" value={config.active_hours_end} onChange={(v) => update("active_hours_end", v)} />
-          <Field label="Timezone" value={config.active_hours_timezone} onChange={(v) => update("active_hours_timezone", v)} />
-        </Section>
-
-        <Section title="Timing">
-          <Number label="Action Delay (s)" value={config.action_delay_seconds} onChange={(v) => update("action_delay_seconds", v)} />
-          <Number label="Sequence Delay (min)" value={config.sequence_delay_minutes} onChange={(v) => update("sequence_delay_minutes", v)} />
-          <Number label="Min Engagement Likes" value={config.min_engagement_likes} onChange={(v) => update("min_engagement_likes", v)} />
-        </Section>
+        {mode === "sniper" && (
+          <Section title="Sniper" subtitle="Reply to fast-trending posts before they peak.">
+            <Toggle label="Enabled" value={config.sniper_enabled} onChange={(v) => update("sniper_enabled", v)} />
+            <Number label="Scan Interval (min)" value={config.sniper_scan_interval_minutes} onChange={(v) => update("sniper_scan_interval_minutes", v)} />
+            <Number label="Min Velocity (likes/min)" value={config.sniper_min_velocity} onChange={(v) => update("sniper_min_velocity", v)} />
+            <Number label="Max Replies on Post" value={config.sniper_max_replies} onChange={(v) => update("sniper_max_replies", v)} />
+            <Number label="Replies per Scan" value={config.sniper_replies_per_scan} onChange={(v) => update("sniper_replies_per_scan", v)} />
+          </Section>
+        )}
       </div>
 
       <div className="sticky bottom-0 bg-black/80 backdrop-blur-sm border-t border-neutral-800 py-4 -mx-6 px-6 mt-8 flex items-center gap-3">
@@ -155,6 +196,7 @@ export default function Settings() {
           {saving ? "Saving..." : "Save Changes"}
         </button>
         {saved && <span className="text-green-400 text-sm">Saved</span>}
+        {saveError && <span className="text-red-400 text-sm">Save failed: {saveError}</span>}
       </div>
     </div>
   );
@@ -231,10 +273,11 @@ function Select({ label, value, onChange, options }: { label: string; value: str
 function DerivedTotals({ config }: { config: any }) {
   // Read-only summary so the user can see what their per-sequence numbers
   // mean for the day. Daily caps shown here are the runtime safety ceiling
-  // computed by the backend.
+  // computed by the backend (refreshed on save).
   const perSeq =
     (config.seq_text_tweets ?? 0) +
     (config.seq_rephrase_tweets ?? 0) +
+    (config.seq_media_tweets ?? 0) +
     (config.seq_qrts ?? 0) +
     (config.seq_rts ?? 0) +
     (config.seq_comments ?? 0) +

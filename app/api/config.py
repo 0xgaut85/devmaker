@@ -32,8 +32,8 @@ WRITABLE_FIELDS = (
     # Intelligence
     "use_llm_classification", "use_vision_image_check", "position_memory_enabled",
     # Sequence composition (per-sequence; daily caps derived from these)
-    "seq_text_tweets", "seq_rephrase_tweets", "seq_comments",
-    "seq_qrts", "seq_rts", "seq_follows", "seq_threads",
+    "seq_text_tweets", "seq_rephrase_tweets", "seq_media_tweets",
+    "seq_comments", "seq_qrts", "seq_rts", "seq_follows", "seq_threads",
     # Active hours
     "active_hours_enabled", "active_hours_start", "active_hours_end",
     "active_hours_timezone",
@@ -79,13 +79,14 @@ def _recompute_daily_caps(cfg: Config) -> None:
     seq_per_day = _sequences_per_day_estimate(cfg)
     text_t = int(cfg.seq_text_tweets or 0)
     reph_t = int(cfg.seq_rephrase_tweets or 0)
+    media_t = int(cfg.seq_media_tweets or 0)
     threads = int(cfg.seq_threads or 0)
     comments = int(cfg.seq_comments or 0)
     qrts = int(cfg.seq_qrts or 0)
     rts = int(cfg.seq_rts or 0)
     follows = int(cfg.seq_follows or 0)
 
-    tweets_per_seq = text_t + reph_t + threads * _THREAD_AVG_LEN
+    tweets_per_seq = text_t + reph_t + media_t + threads * _THREAD_AVG_LEN
     cfg.daily_max_tweets = max(1, tweets_per_seq * seq_per_day)
     cfg.daily_max_comments = max(0, comments * seq_per_day)
     cfg.daily_max_qrts = max(0, qrts * seq_per_day)

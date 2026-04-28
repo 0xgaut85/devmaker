@@ -4,10 +4,14 @@ GRAMMAR_RULES = """
 GRAMMAR (non-negotiable):
 - Start every sentence with a capital letter. Capitalize "I", names, proper nouns.
 - Use commas at natural pauses and in lists. No Oxford comma.
-- After every sentence (after a period), add a line break before the next sentence. Blank line between paragraphs.
 - NEVER use em dashes (— or –). Use commas, periods, or line breaks instead.
 - End sentences with a period (or ? / ! when appropriate).
 - Connect related ideas with commas or new sentences. No "sentence. lowercase sentence." pattern.
+
+VISUAL STRUCTURE (vary it — readers spot bots by scrolling):
+- Do NOT default to "one sentence, blank line, one sentence, blank line". That layout is the single biggest tell.
+- Match the STRUCTURE block below for THIS post. If it says "single flowing paragraph", do NOT break sentences onto separate lines. If it says "two paragraphs with a gap", use ONE blank line between two coherent paragraphs (each paragraph = several sentences flowing together, not one per line).
+- Line breaks are a deliberate beat, not a default rhythm. Use them when they ADD meaning, not as a uniform separator.
 """.strip()
 
 REPLY_GRAMMAR_RULES = """
@@ -81,7 +85,7 @@ FORMAT_CATALOG = {
     "B": {"name": "Numbered list", "desc": "3 things worth knowing about this topic. Use \\n\\n between items."},
     "C": {"name": "Observation", "desc": "A sharp observation about a trend or pattern. ~200 chars with setup + insight."},
     "D": {"name": "Question hook", "desc": "Start with a provocative question, then give your take."},
-    "E": {"name": "Contrarian opener", "desc": "Hot take: [opinion]. Then back it up with specifics."},
+    "E": {"name": "Contrarian opener", "desc": "Lead with a counter-consensus opinion (do NOT literally write 'Hot take:' as the opener), then back it up with one or two specifics."},
     "F": {"name": "Long reflection", "desc": "400+ chars, 3-4 distinct paragraphs. Deep thinking about the topic."},
     "G": {"name": "Bullet list with intro", "desc": "Intro sentence, then bullet points with \\n\\n- format."},
     "H": {"name": "One-liner mic drop", "desc": "Single devastating sentence. That's it."},
