@@ -147,6 +147,10 @@ class State(Base):
     # Optional column — old DBs without it gracefully degrade to one-step
     # avoidance via last_format alone.
     recent_formats = Column(JSON, default=list)
+    # Same idea for visual structures (single_line / two_paragraphs / etc.)
+    # so we don't get "all flowing paragraphs" by chance even when the format
+    # rotates. Picker excludes the last few used.
+    recent_structures = Column(JSON, default=list)
     last_topic_tweet = Column(String, default="")
     last_topic_qrt = Column(String, default="")
     last_topic_rt = Column(String, default="")

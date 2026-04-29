@@ -270,7 +270,8 @@ def _generate(
 def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
                    length_tier: str = "MEDIUM",
                    recent_posts: list[str] | None = None,
-                   enabled_topics: list[str] | None = None) -> GenerationResult:
+                   enabled_topics: list[str] | None = None,
+                   structure_name: str | None = None) -> GenerationResult:
     voice = cfg.get("voice_description", "")
     dont = cfg.get("dev_dont", "")
     system, user = build_tweet_rephrase_prompt(
@@ -284,6 +285,7 @@ def generate_tweet(cfg: dict, format_key: str, original_tweet: str,
         enabled_topics=enabled_topics,
         dev_do=cfg.get("dev_do", ""),
         dev_dont=dont,
+        structure_name=structure_name,
     )
     return _generate(cfg, system, user,
                      length_tier=length_tier, dont_text=dont, voice=voice,
@@ -294,6 +296,7 @@ def generate_quote_comment(cfg: dict, original_tweet: str,
                            recent_posts: list[str] | None = None,
                            enabled_topics: list[str] | None = None,
                            image_b64_list: list[tuple[str, str]] | None = None,
+                           structure_name: str | None = None,
                            ) -> GenerationResult:
     images = image_b64_list or []
     voice = cfg.get("voice_description", "")
@@ -309,6 +312,7 @@ def generate_quote_comment(cfg: dict, original_tweet: str,
         has_images=bool(images),
         dev_do=cfg.get("dev_do", ""),
         dev_dont=dont,
+        structure_name=structure_name,
     )
     call_fn = (lambda u: _call_llm_with_images(cfg, system, u, images)) if images else None
     return _generate(cfg, system, user,
@@ -323,6 +327,7 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
                            positions: list[dict] | None = None,
                            enabled_topics: list[str] | None = None,
                            image_b64_list: list[tuple[str, str]] | None = None,
+                           structure_name: str | None = None,
                            ) -> GenerationResult:
     images = image_b64_list or []
     voice = cfg.get("voice_description", "")
@@ -341,6 +346,7 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
         has_images=bool(images),
         dev_do=cfg.get("dev_do", ""),
         dev_dont=dont,
+        structure_name=structure_name,
     )
     call_fn = (lambda u: _call_llm_with_images(cfg, system, u, images)) if images else None
     return _generate(cfg, system, user,
@@ -349,13 +355,15 @@ def generate_reply_comment(cfg: dict, original_tweet: str, length_tier: str, ton
 
 
 def generate_degen_tweet(cfg: dict, format_key: str, original_tweet: str,
-                         recent_posts: list[str] | None = None) -> GenerationResult:
+                         recent_posts: list[str] | None = None,
+                         structure_name: str | None = None) -> GenerationResult:
     voice = cfg.get("degen_voice_description", "")
     dont = cfg.get("degen_dont", "")
     system, user = build_degen_tweet_prompt(
         voice, format_key, original_tweet,
         cfg.get("degen_do", ""), dont,
         recent_posts=recent_posts,
+        structure_name=structure_name,
     )
     return _generate(cfg, system, user,
                      length_tier="MEDIUM", dont_text=dont, voice=voice,
@@ -363,13 +371,15 @@ def generate_degen_tweet(cfg: dict, format_key: str, original_tweet: str,
 
 
 def generate_degen_quote_comment(cfg: dict, original_tweet: str,
-                                 recent_posts: list[str] | None = None) -> GenerationResult:
+                                 recent_posts: list[str] | None = None,
+                                 structure_name: str | None = None) -> GenerationResult:
     voice = cfg.get("degen_voice_description", "")
     dont = cfg.get("degen_dont", "")
     system, user = build_degen_quote_comment_prompt(
         voice, original_tweet,
         cfg.get("degen_do", ""), dont,
         recent_posts=recent_posts,
+        structure_name=structure_name,
     )
     return _generate(cfg, system, user,
                      length_tier="SHORT", dont_text=dont, voice=voice,
@@ -380,7 +390,8 @@ def generate_degen_reply_comment(cfg: dict, original_tweet: str, length_tier: st
                                  recent_posts: list[str] | None = None,
                                  post_type: str = "", reply_strategy: str = "",
                                  existing_replies: list[str] | None = None,
-                                 positions: list[dict] | None = None) -> GenerationResult:
+                                 positions: list[dict] | None = None,
+                                 structure_name: str | None = None) -> GenerationResult:
     voice = cfg.get("degen_voice_description", "")
     dont = cfg.get("degen_dont", "")
     system, user = build_degen_reply_prompt(
@@ -389,6 +400,7 @@ def generate_degen_reply_comment(cfg: dict, original_tweet: str, length_tier: st
         recent_posts=recent_posts,
         post_type=post_type, reply_strategy=reply_strategy,
         existing_replies=existing_replies, positions=positions,
+        structure_name=structure_name,
     )
     return _generate(cfg, system, user,
                      length_tier=length_tier, dont_text=dont, voice=voice,

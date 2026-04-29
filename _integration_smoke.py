@@ -25,7 +25,8 @@ from unittest.mock import patch
 from app.content.generator import GenerationResult, ThreadResult
 from app.content.prompts import (
     _FORMAT_STRUCTURE_WEIGHTS, _STRUCTURES, _structure_block,
-    build_tweet_rephrase_prompt,
+    build_quote_comment_prompt, build_reply_comment_prompt,
+    build_tweet_rephrase_prompt, pick_structure_name,
 )
 from app.content.rules import FORMAT_CATALOG, FORMAT_ORDER, LENGTH_FOR_FORMAT
 from app.content.validator import (
@@ -524,7 +525,9 @@ def test_structure_block_falls_back_to_length():
 
 def test_structure_block_appears_in_prompt():
     # The rephrase prompt must contain the chosen STRUCTURE block so the LLM
-    # actually sees the instruction.
+    # actually sees the instruction. The block now uses 'STRUCTURE = name'
+    # form (with the literal name) plus an EXAMPLE so the model has a
+    # pattern to copy.
     system, _user = build_tweet_rephrase_prompt(
         voice="casual dev",
         bad_examples="", good_examples="",
@@ -532,11 +535,11 @@ def test_structure_block_appears_in_prompt():
         recent_posts=[], cfg={},
         enabled_topics=["Database / backend"],
     )
-    has_structure_word = "STRUCTURE:" in system
+    has_structure_word = "STRUCTURE =" in system and "EXAMPLE shape:" in system
     _say(
-        "rephrase prompt contains a STRUCTURE: block",
+        "rephrase prompt contains a STRUCTURE block with an EXAMPLE",
         has_structure_word,
-        f"first 600 chars: {system[:600]!r}",
+        f"system tail: ...{system[-600:]!r}",
     )
 
 
@@ -749,6 +752,162 @@ def test_new_structures_can_be_picked():
 
 
 # --------------------------------------------------------------------------- #
+#  Test 13 - structure rotation diagnoses the "all paragraphs" regression    #
+# --------------------------------------------------------------------------- #
+
+def test_pick_structure_name_excludes_recent():
+    print("\n[13] structure rotation")
+    # Simulate 12 sequential picks with the action layer's avoid-window of 3.
+    # No structure should appear more than twice in a row.
+    state: dict = {"recent_structures": []}
+    picks: list[str] = []
+    for _ in range(12):
+        name = S.pick_diverse_structure(state, format_key="C", length_tier="MEDIUM")
+        picks.append(name)
+    longest_run = 1
+    cur = 1
+    for i in range(1, len(picks)):
+        if picks[i] == picks[i - 1]:
+            cur += 1
+            longest_run = max(longest_run, cur)
+        else:
+            cur = 1
+    _say(
+        "no structure repeats more than 2 times in a row across 12 picks",
+        longest_run <= 2,
+        f"longest_run={longest_run} | picks={picks}",
+    )
+    distinct = len(set(picks))
+    _say(
+        "12 rotated picks cover at least 4 distinct structures",
+        distinct >= 4,
+        f"distinct={distinct} | picks={picks}",
+    )
+    _say(
+        "state.recent_structures grows but is capped",
+        1 <= len(state.get("recent_structures", [])) <= 6,
+        f"len={len(state.get('recent_structures', []))}",
+    )
+
+
+def test_pick_structure_name_handles_pinned_format():
+    # Format H (mic_drop) has only single_line in its weight table. Even with
+    # single_line in the recent list, the picker must still return single_line
+    # rather than fall back to nothing.
+    state = {"recent_structures": ["single_line", "single_line", "single_line"]}
+    name = S.pick_diverse_structure(state, format_key="H", length_tier="SHORT")
+    _say(
+        "pinned format H still returns single_line when recent is full of it",
+        name == "single_line",
+        f"got={name}",
+    )
+
+
+def test_pick_structure_name_with_explicit_exclude():
+    # Pure helper test — no state, just the exclude list.
+    seen: set[str] = set()
+    for _ in range(50):
+        name = pick_structure_name(
+            format_key="C", length_tier="MEDIUM",
+            exclude=["flowing_paragraph", "two_paragraphs"],
+        )
+        seen.add(name)
+    _say(
+        "pick_structure_name honors exclude list",
+        "flowing_paragraph" not in seen and "two_paragraphs" not in seen,
+        f"seen={seen}",
+    )
+
+
+def test_structures_have_concrete_examples():
+    # Every structure block must include an EXAMPLE so the LLM has a literal
+    # pattern to copy. Without this we get "all paragraphs" because the
+    # description alone is too abstract.
+    missing: list[str] = []
+    for name, txt in _STRUCTURES.items():
+        if "EXAMPLE" not in txt:
+            missing.append(name)
+    _say(
+        "every structure description contains an EXAMPLE block",
+        not missing,
+        f"missing={missing}",
+    )
+
+
+def test_action_layer_can_force_structure():
+    # Build a rephrase prompt with structure_name='line_broken' and verify
+    # the rendered system prompt contains the line_broken description (not
+    # whatever the random picker would have returned).
+    system, _ = build_tweet_rephrase_prompt(
+        voice="curious dev who likes infra rants",
+        bad_examples="", good_examples="",
+        format_key="C", original_tweet="docker compose just works",
+        structure_name="line_broken",
+    )
+    _say(
+        "build_tweet_rephrase_prompt honors structure_name='line_broken'",
+        "line_broken" in system and "blank line between them" in system,
+        f"system tail: ...{system[-400:]}",
+    )
+    # Quote builder
+    qsys, _ = build_quote_comment_prompt(
+        voice="dev", bad_examples="", good_examples="",
+        original_tweet="hello world",
+        structure_name="single_line",
+    )
+    _say(
+        "build_quote_comment_prompt honors structure_name='single_line'",
+        "single_line" in qsys,
+        f"system tail: ...{qsys[-300:]}",
+    )
+    # Reply builder
+    rsys, _ = build_reply_comment_prompt(
+        voice="dev", bad_examples="", good_examples="",
+        original_tweet="hello", length_tier="SHORT", tone="curious",
+        structure_name="setup_punchline",
+    )
+    _say(
+        "build_reply_comment_prompt honors structure_name='setup_punchline'",
+        "setup_punchline" in rsys,
+        f"system tail: ...{rsys[-300:]}",
+    )
+
+
+def test_structure_block_is_last_before_critical_rules():
+    # Placement matters: the LLM weighs the most-recent context most heavily.
+    # If good_examples sit between STRUCTURE and CRITICAL RULES, the model
+    # imitates examples (always paragraphs) and ignores the structure.
+    system, _ = build_tweet_rephrase_prompt(
+        voice="dev",
+        bad_examples="bad ex 1",
+        good_examples="good ex 1\ngood ex 2",
+        format_key="C", original_tweet="any topic",
+        structure_name="line_broken",
+    )
+    structure_idx = system.find("STRUCTURE = line_broken")
+    examples_idx = system.find("good ex 1")
+    critical_idx = system.find("CRITICAL RULES")
+    _say(
+        "STRUCTURE block sits AFTER good_examples and BEFORE CRITICAL RULES",
+        examples_idx >= 0 and structure_idx > examples_idx and critical_idx > structure_idx,
+        f"examples={examples_idx}, structure={structure_idx}, critical={critical_idx}",
+    )
+
+
+def test_critical_rules_reinforce_structure():
+    system, _ = build_tweet_rephrase_prompt(
+        voice="dev", bad_examples="", good_examples="",
+        format_key="A", original_tweet="any",
+        structure_name="single_line",
+    )
+    _say(
+        "CRITICAL RULES reinforce single_line constraint",
+        "If STRUCTURE says single_line, output ONE line" in system,
+        f"system tail: ...{system[-500:]}",
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Runner                                                                     #
 # --------------------------------------------------------------------------- #
 
@@ -773,6 +932,13 @@ def main() -> int:
     test_pick_diverse_format_personality_bias()
     test_pick_diverse_format_handles_old_state()
     test_new_structures_can_be_picked()
+    test_pick_structure_name_excludes_recent()
+    test_pick_structure_name_handles_pinned_format()
+    test_pick_structure_name_with_explicit_exclude()
+    test_structures_have_concrete_examples()
+    test_action_layer_can_force_structure()
+    test_structure_block_is_last_before_critical_rules()
+    test_critical_rules_reinforce_structure()
 
     print(f"\n{'='*60}")
     print(f"  passed: {len(PASS)}")

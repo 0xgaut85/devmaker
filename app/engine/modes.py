@@ -141,8 +141,10 @@ async def run_dev_sequence(ctx: SequenceContext) -> bool:
     ctx.seq_num = int(ctx.state.get("sequence_number", 0)) + 1
     fmt_name = FORMAT_CATALOG.get(ctx.format_key, {}).get("name", ctx.format_key)
     recent_fmts = " -> ".join((ctx.state.get("recent_formats") or [])[-5:]) or ctx.format_key
+    recent_structs = " -> ".join((ctx.state.get("recent_structures") or [])[-5:]) or "(none yet)"
     ctx.log(f"=== DEV SEQUENCE {ctx.seq_num} | Format: {ctx.format_key} ({fmt_name}) ===")
     ctx.log(f"[Format] recent: {recent_fmts}")
+    ctx.log(f"[Structure] recent: {recent_structs}")
     ctx.log(f"[Budget] today: {_format_budget(ctx)}")
 
     pool = await _scrape_eligible_pool(ctx)
@@ -283,11 +285,15 @@ async def run_degen_sequence(ctx: SequenceContext) -> bool:
         tweet_post = (unused or posts)[0]
         tweet_topic = classify_topic(tweet_post["text"], enabled, DEGEN_TOPIC_KEYWORDS)
         tweet_handle = tweet_post.get("handle", "")
-        ctx.log(f"[Degen Tweet] From @{tweet_handle}")
+        structure = S.pick_diverse_structure(
+            ctx.state, format_key=format_key, length_tier="MEDIUM", degen=True,
+        )
+        ctx.log(f"[Degen Tweet] From @{tweet_handle} | structure={structure}")
 
         result: GenerationResult = await asyncio.to_thread(
             generate_degen_tweet, ctx.cfg, format_key, tweet_post["text"],
             S.recent_posts(ctx.state),
+            structure,
         )
         if not result.text:
             ctx.log(f"[Degen Tweet] Skipped — {result.reason or 'generation failed'}.")
@@ -325,12 +331,14 @@ async def run_degen_sequence(ctx: SequenceContext) -> bool:
         if qrt_candidates:
             qrt_post = qrt_candidates[0]
             qrt_url = qrt_post.get("url", "")
-            ctx.log(f"[Degen QRT] Quoting @{qrt_post.get('handle')}")
+            qrt_structure = S.pick_diverse_structure(ctx.state, length_tier="SHORT", degen=True)
+            ctx.log(f"[Degen QRT] Quoting @{qrt_post.get('handle')} | structure={qrt_structure}")
             await ctx.human.like_and_bookmark(qrt_url)
             if not ctx.is_cancelled():
                 quote: GenerationResult = await asyncio.to_thread(
                     generate_degen_quote_comment, ctx.cfg, qrt_post["text"],
                     S.recent_posts(ctx.state),
+                    qrt_structure,
                 )
                 if not quote.text:
                     ctx.log(f"[Degen QRT] Skipped — {quote.reason or 'generation failed'}.")

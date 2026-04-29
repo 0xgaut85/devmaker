@@ -183,6 +183,47 @@ def _personality_weights(cfg: dict) -> dict[str, float]:
     return weights
 
 
+# Visual structure rotation. Smaller pool (9 structures) so we exclude only
+# the last 3 — excluding more would over-constrain pinned formats like H
+# (single_line only) or Q (single_line only) which would loop forever.
+_RECENT_STRUCTURES_AVOID = 3
+_RECENT_STRUCTURES_CAP = 6
+
+
+def pick_diverse_structure(
+    state: dict,
+    format_key: str | None = None,
+    length_tier: str | None = None,
+    degen: bool = False,
+) -> str:
+    """Pick a visual structure for THIS post, avoiding the last few used.
+
+    Mirrors :func:`pick_diverse_format`: excludes the last
+    ``_RECENT_STRUCTURES_AVOID`` structures from the candidate pool, picks
+    weighted-random from what remains, updates ``state['recent_structures']``,
+    and returns the structure name. The action layer passes this name through
+    the generator -> prompt builder chain so the LLM gets a deterministic
+    rotation instead of pure-random "all flowing paragraphs by chance".
+
+    For pinned formats (H, Q) the weight table has a single entry, so even
+    when that entry is in the recent list the picker falls back to the full
+    pool and picks it again. That's intentional — H is supposed to always be
+    a one-liner.
+    """
+    # Defer the import so prompts.py can import from rules without a cycle.
+    from app.content.prompts import pick_structure_name
+
+    recent: list[str] = list(state.get("recent_structures") or [])
+    avoid = recent[-_RECENT_STRUCTURES_AVOID:]
+    name = pick_structure_name(
+        format_key=format_key, length_tier=length_tier, degen=degen,
+        exclude=avoid,
+    )
+    recent.append(name)
+    state["recent_structures"] = recent[-_RECENT_STRUCTURES_CAP:]
+    return name
+
+
 def pick_diverse_format(cfg: dict, state: dict) -> str:
     """Pick the next dev tweet format with three layers of diversity:
 
@@ -311,7 +352,7 @@ def use_following(cfg: dict) -> bool:
 __all__ = [
     "daily_caps_for", "today_counts", "can_act", "record_action", "all_caps_reached",
     "recent_posts", "remember_posted_text", "remember_source_url", "remember_follow",
-    "next_format", "pick_diverse_format",
+    "next_format", "pick_diverse_format", "pick_diverse_structure",
     "next_degen_format", "next_thread_format", "next_comment_rotation",
     "tone_for", "topic_weight", "next_topic", "record_position_in_state",
     "is_active_hours", "active_api_key", "enabled_topics", "enabled_degen_topics",

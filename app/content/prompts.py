@@ -25,38 +25,80 @@ from app.content.rules import (
 #  default to its own training-data favourite (which is sentence-per-line).   #
 # --------------------------------------------------------------------------- #
 
+# Each structure has TWO parts: a description telling the LLM what shape to
+# produce, and a concrete EXAMPLE so the model has a literal pattern to copy.
+# Without the example we kept getting "all paragraphs" because LLMs default to
+# their training-data favourite (paragraphs) when the description is abstract.
 _STRUCTURES: dict[str, str] = {
-    "single_line":
-        "STRUCTURE: One flowing sentence (or two short sentences run together). "
-        "NO line breaks at all. NO blank lines.",
-    "flowing_paragraph":
-        "STRUCTURE: 2-3 sentences flowing together as ONE paragraph. "
-        "Use periods and commas. Do NOT put each sentence on its own line. "
-        "The whole post is one block of text.",
-    "two_paragraphs":
-        "STRUCTURE: Exactly TWO paragraphs separated by ONE blank line. "
+    "single_line": (
+        "STRUCTURE = single_line. One flowing sentence (or at most two short sentences run together). "
+        "NO line breaks at all. NO blank lines.\n"
+        "EXAMPLE shape:\n"
+        "  Postgres handles read-heavy workloads better than people give it credit for."
+    ),
+    "flowing_paragraph": (
+        "STRUCTURE = flowing_paragraph. 2-3 sentences flowing together as ONE paragraph. "
+        "Use periods and commas. Do NOT put each sentence on its own line. The whole post is one block of text.\n"
+        "EXAMPLE shape:\n"
+        "  Most teams blame the database when the real bottleneck is the ORM. The planner is mature, indexes do the heavy lifting, and the query layer hides the actual cost."
+    ),
+    "two_paragraphs": (
+        "STRUCTURE = two_paragraphs. Exactly TWO paragraphs separated by ONE blank line. "
         "Each paragraph is 1-3 sentences flowing together (NO internal line breaks within a paragraph). "
-        "Think: setup paragraph, then payoff paragraph.",
-    "line_broken":
-        "STRUCTURE: Each sentence on its own line, with a blank line between them. "
-        "Use this format ONLY for this post — it is a deliberate punch-up rhythm, not a default.",
-    "multi_paragraph":
-        "STRUCTURE: 3+ paragraphs separated by blank lines. "
+        "Think: setup paragraph, then payoff paragraph.\n"
+        "EXAMPLE shape:\n"
+        "  Most ORMs hide bugs you would catch in raw SQL. Treat them as a convenience, not a contract.\n\n"
+        "  When latency matters, drop down to the query layer. Saves three round trips on the average request path."
+    ),
+    "line_broken": (
+        "STRUCTURE = line_broken. Each sentence on its own line, with a blank line between them. "
+        "Use this format ONLY for this post — it is a deliberate punch-up rhythm.\n"
+        "EXAMPLE shape:\n"
+        "  I deleted Slack today.\n\n"
+        "  Productivity tripled.\n\n"
+        "  Not a coincidence."
+    ),
+    "multi_paragraph": (
+        "STRUCTURE = multi_paragraph. 3+ paragraphs separated by blank lines. "
         "Each paragraph is a coherent thought unit (NOT a single sentence). "
-        "Sentences inside a paragraph flow together with periods and commas, not line breaks.",
-    "lead_plus_bullets":
-        "STRUCTURE: One short lead sentence, blank line, then 2-4 bullet items. "
-        "Each bullet starts with '- ' (dash + space) and is a short claim or example. "
-        "No numbering, no sub-bullets.",
-    "numbered_list":
-        "STRUCTURE: A numbered list using '1. ', '2. ', '3. ' at the start of each item. "
-        "Each item on its own line. Optional one-line intro before the list.",
-    "question_then_answer":
-        "STRUCTURE: One sharp question on the first line, blank line, then a 1-2 sentence answer paragraph. "
-        "The question must end with '?'.",
-    "setup_punchline":
-        "STRUCTURE: One setup line, blank line, then ONE punchline. "
-        "The punchline is shorter than the setup and lands the joke or insight without explanation.",
+        "Sentences inside a paragraph flow together with periods and commas, not line breaks.\n"
+        "EXAMPLE shape:\n"
+        "  Three years ago caching was everyone's first optimization. You had Redis, you were done.\n\n"
+        "  Now the bottleneck moved. Cold path latency dominates because cold paths got bigger, not slower.\n\n"
+        "  The fix is not faster cache. It is fewer cache misses, which means rethinking what counts as cold."
+    ),
+    "lead_plus_bullets": (
+        "STRUCTURE = lead_plus_bullets. One short lead sentence, blank line, then 2-4 bullet items. "
+        "Each bullet starts with '- ' (dash + space) and is a short claim or example. No numbering, no sub-bullets.\n"
+        "EXAMPLE shape:\n"
+        "  Three things that actually kill API latency:\n\n"
+        "  - N+1 queries you cannot see in your traces\n"
+        "  - Synchronous I/O on cold paths\n"
+        "  - JSON serialization for huge payloads"
+    ),
+    "numbered_list": (
+        "STRUCTURE = numbered_list. A numbered list using '1. ', '2. ', '3. ' at the start of each item. "
+        "Each item on its own line. Optional one-line intro before the list.\n"
+        "EXAMPLE shape:\n"
+        "  How to actually get faster at debugging:\n\n"
+        "  1. Reproduce before you theorize.\n"
+        "  2. Read the error message line by line.\n"
+        "  3. Bisect, do not guess."
+    ),
+    "question_then_answer": (
+        "STRUCTURE = question_then_answer. One sharp question on the first line, blank line, then a 1-2 sentence answer paragraph. "
+        "The question must end with '?'.\n"
+        "EXAMPLE shape:\n"
+        "  Why does every Postgres tutorial skip the WAL?\n\n"
+        "  Because the durability story does not fit on one slide, and skipping it lets the tutorial author claim setup is easy."
+    ),
+    "setup_punchline": (
+        "STRUCTURE = setup_punchline. One setup line, blank line, then ONE punchline. "
+        "The punchline is shorter than the setup and lands the joke or insight without explanation.\n"
+        "EXAMPLE shape:\n"
+        "  Spent six months building a custom ORM.\n\n"
+        "  Django shipped it last week."
+    ),
 }
 
 # Per-format weights. A format with strong inherent layout (numbered list,
@@ -125,29 +167,71 @@ def _weighted_pick(weights: dict[str, float]) -> str:
     return random.choices(keys, weights=probs, k=1)[0]
 
 
-def _structure_block(format_key: str | None = None,
-                     length_tier: str | None = None,
-                     degen: bool = False) -> str:
-    """Pick a random visual structure for this generation and render it as a
-    prompt instruction.
+def _resolve_structure_weights(
+    format_key: str | None = None,
+    length_tier: str | None = None,
+    degen: bool = False,
+) -> dict[str, float]:
+    """Resolve the base weight table for the given format/length/degen combo.
 
     Resolution order: ``format_key`` -> ``length_tier`` -> generic default.
-    Pass ``degen=True`` to use the degen-format weight table when ``format_key``
-    is a degen format key (DA, DB, ...).
     """
     table = _DEGEN_STRUCTURE_WEIGHTS if degen else _FORMAT_STRUCTURE_WEIGHTS
-    weights: dict[str, float] | None = None
     if format_key and format_key in table:
-        weights = table[format_key]
-    elif length_tier and length_tier in _LENGTH_STRUCTURE_WEIGHTS:
-        weights = _LENGTH_STRUCTURE_WEIGHTS[length_tier]
-    structure = _weighted_pick(weights or {
+        return dict(table[format_key])
+    if length_tier and length_tier in _LENGTH_STRUCTURE_WEIGHTS:
+        return dict(_LENGTH_STRUCTURE_WEIGHTS[length_tier])
+    return {
         "flowing_paragraph": 0.5,
         "two_paragraphs": 0.25,
         "single_line": 0.15,
         "line_broken": 0.10,
-    })
-    return _STRUCTURES[structure]
+    }
+
+
+def pick_structure_name(
+    format_key: str | None = None,
+    length_tier: str | None = None,
+    degen: bool = False,
+    exclude: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str:
+    """Pure picker that returns the NAME of a visual structure.
+
+    When ``exclude`` is non-empty, those structures are removed from the
+    candidate pool. Falls back to the full pool only when every option would
+    be excluded (so the picker is always able to return SOMETHING). Used by
+    :func:`app.engine.state.pick_diverse_structure` to enforce rotation
+    across consecutive posts.
+    """
+    weights = _resolve_structure_weights(format_key, length_tier, degen)
+    if exclude:
+        excluded = set(exclude)
+        filtered = {k: v for k, v in weights.items() if k not in excluded}
+        if filtered:
+            weights = filtered
+    return _weighted_pick(weights)
+
+
+def _structure_block(
+    format_key: str | None = None,
+    length_tier: str | None = None,
+    degen: bool = False,
+    structure_name: str | None = None,
+) -> str:
+    """Render the prompt-side STRUCTURE instruction.
+
+    If ``structure_name`` is provided, that structure is used verbatim — this
+    is the path the action layer takes after pre-picking through
+    :func:`app.engine.state.pick_diverse_structure` so the prompt builder
+    doesn't make its own random choice and break rotation.
+
+    If ``structure_name`` is None we fall back to the legacy in-builder pick
+    (no rotation), preserved for callers that don't have a state context.
+    """
+    name = structure_name if structure_name in _STRUCTURES else pick_structure_name(
+        format_key=format_key, length_tier=length_tier, degen=degen,
+    )
+    return _STRUCTURES[name]
 
 
 def _reply_length_caps(length_tier: str) -> str:
@@ -319,10 +403,15 @@ def build_tweet_rephrase_prompt(
     cfg: dict | None = None,
     enabled_topics: list[str] | None = None,
     dev_do: str = "", dev_dont: str = "",
+    structure_name: str | None = None,
 ) -> tuple[str, str]:
     cfg = cfg or {}
     fmt = FORMAT_CATALOG[format_key]
-    structure = _structure_block(format_key=format_key)
+    structure = _structure_block(format_key=format_key, structure_name=structure_name)
+    # We deliberately put the STRUCTURE block AFTER good_examples and
+    # recent_posts. The LLM weighs the most-recent context most heavily, and
+    # without this placement the model would imitate good_examples (which are
+    # almost always paragraphs) and ignore the structure hint.
     system = f"""You are writing social media posts for X (Twitter).
 
 VOICE — write exactly like this person:
@@ -335,17 +424,20 @@ VOICE — write exactly like this person:
 {_dodont_block(dev_do, dev_dont)}FORMAT for this post: {fmt['name']}
 {fmt['desc']}
 
-{structure}
-
 {_examples_block(bad_examples, good_examples)}
 {_recent_posts_block(recent_posts)}
-CRITICAL RULES:
+{structure}
+
+CRITICAL RULES (read in this order, each one is non-negotiable):
+- The STRUCTURE block immediately above DEFINES the visual shape of THIS post. Match the example shape exactly. Do NOT default to a paragraph.
+- If STRUCTURE says single_line, output ONE line. No \\n at all.
+- If STRUCTURE says line_broken, separate every sentence with a blank line.
+- If STRUCTURE says lead_plus_bullets or numbered_list, the LIST format wins over the FORMAT block above.
 - Output ONLY the final post text. No quotes, no labels, no explanation.
 - The post MUST make sense completely on its own. A stranger with zero context should understand it.
 - NEVER reference "this", "that", or "the original" as if reacting to another post. You are NOT replying.
 - Do NOT start with "honestly", "this is", "that's", or "so true".
 - NEVER use em dashes (— or –). Use commas or periods instead.
-- FOLLOW THE STRUCTURE block above exactly. Do not default to "one sentence per line" unless the structure says so.
 - Include at least one SPECIFIC detail (a tool name, a number, a scenario, a concrete example).
 - NEVER claim you built, shipped, or launched anything. No fake personal projects.
 - Share opinions, observations, questions, or commentary. Not fabricated stories.
@@ -370,12 +462,17 @@ def build_quote_comment_prompt(
     enabled_topics: list[str] | None = None,
     has_images: bool = False,
     dev_do: str = "", dev_dont: str = "",
+    structure_name: str | None = None,
 ) -> tuple[str, str]:
     cfg = cfg or {}
     img_note = "\n- The tweet includes images. Look at them to understand memes, screenshots, charts, or visual jokes." if has_images else ""
-    # Quote comments are typically 1-3 sentences, so bias toward SHORT/MEDIUM
-    # structures (single line or one flowing paragraph).
-    structure = _structure_block(length_tier="SHORT" if random.random() < 0.6 else "MEDIUM")
+    # Quote comments are typically 1-3 sentences. The action layer pre-picks
+    # the structure via state.pick_diverse_structure; we honor it via
+    # structure_name. When None we fall back to length-based pick (legacy).
+    structure = _structure_block(
+        length_tier="SHORT" if random.random() < 0.6 else "MEDIUM",
+        structure_name=structure_name,
+    )
     system = f"""You are writing a quote retweet comment for X (Twitter).
 
 VOICE — write exactly like this person:
@@ -386,13 +483,14 @@ VOICE — write exactly like this person:
 {ANTI_SLOP_RULES}
 
 {_dodont_block(dev_do, dev_dont)}{_examples_block(bad_examples, good_examples)}
+{_recent_posts_block(recent_posts)}
 {structure}
 
-{_recent_posts_block(recent_posts)}
-CRITICAL RULES:
+CRITICAL RULES (read in this order, each one is non-negotiable):
+- The STRUCTURE block immediately above DEFINES the visual shape of THIS post. Match the example shape exactly. Do NOT default to a paragraph.
+- If STRUCTURE says single_line, output ONE line.
 - Output ONLY the quote comment text. No quotes, no labels.
 - Keep it 1-3 sentences. Smart, adds something new. Not generic praise.
-- FOLLOW THE STRUCTURE block above exactly. Do not put each sentence on its own line unless the structure says so.
 - Do NOT start with "honestly", "this is", "that's", "great point", or "so true".
 - NEVER use em dashes (— or –).
 - Add a SPECIFIC opinion or counterpoint. Include a concrete detail.
@@ -422,6 +520,7 @@ def build_reply_comment_prompt(
     enabled_topics: list[str] | None = None,
     has_images: bool = False,
     dev_do: str = "", dev_dont: str = "",
+    structure_name: str | None = None,
 ) -> tuple[str, str]:
     cfg = cfg or {}
     tier = LENGTH_TIERS[length_tier]
@@ -430,7 +529,7 @@ def build_reply_comment_prompt(
         post_type_block = f"\nPOST TYPE: {post_type}\nREPLY STRATEGY: {reply_strategy}\n"
     img_note = "\n- The tweet includes images. Use them to understand memes, screenshots, charts, or visual context." if has_images else ""
 
-    structure = _structure_block(length_tier=length_tier)
+    structure = _structure_block(length_tier=length_tier, structure_name=structure_name)
     system = f"""You are writing a reply comment on X (Twitter).
 
 VOICE — write exactly like this person:
@@ -441,16 +540,17 @@ VOICE — write exactly like this person:
 {ANTI_SLOP_RULES}
 
 {_dodont_block(dev_do, dev_dont)}{_examples_block(bad_examples, good_examples)}
-{structure}
-
 {_recent_posts_block(recent_posts)}{post_type_block}{_existing_replies_block(existing_replies)}{_positions_block(positions)}
 LENGTH: {length_tier} ({tier['desc']}) — target {tier['min']}-{tier['max']} characters.
 {_reply_length_caps(length_tier)}
 TONE: {tone.replace('_', ' ')}
 
-CRITICAL RULES:
+{structure}
+
+CRITICAL RULES (read in this order, each one is non-negotiable):
+- The STRUCTURE block immediately above DEFINES the visual shape of THIS post. Match the example shape exactly. Do NOT default to a paragraph.
+- If STRUCTURE says single_line, output ONE line.
 - Output ONLY the comment text. No quotes, no labels.
-- FOLLOW THE STRUCTURE block above exactly. Do not put each sentence on its own line unless the structure says so.
 - Do NOT start with "honestly", "this is", "that's", "great point", "so true", "needed this".
 - NEVER use em dashes (— or –). Use commas or periods.
 - Add a SPECIFIC opinion or example. No generic reactions.
@@ -493,9 +593,10 @@ def build_degen_tweet_prompt(
     voice: str, format_key: str, original_tweet: str,
     degen_do: str = "", degen_dont: str = "",
     recent_posts: list[str] | None = None,
+    structure_name: str | None = None,
 ) -> tuple[str, str]:
     fmt = DEGEN_FORMAT_CATALOG[format_key]
-    structure = _structure_block(format_key=format_key, degen=True)
+    structure = _structure_block(format_key=format_key, degen=True, structure_name=structure_name)
     system = f"""You are a crypto Twitter (CT) poster writing posts for X.
 
 VOICE:
@@ -531,8 +632,12 @@ def build_degen_quote_comment_prompt(
     voice: str, original_tweet: str,
     degen_do: str = "", degen_dont: str = "",
     recent_posts: list[str] | None = None,
+    structure_name: str | None = None,
 ) -> tuple[str, str]:
-    structure = _structure_block(length_tier="SHORT" if random.random() < 0.6 else "MEDIUM")
+    structure = _structure_block(
+        length_tier="SHORT" if random.random() < 0.6 else "MEDIUM",
+        structure_name=structure_name,
+    )
     system = f"""You are writing a quote retweet comment on crypto Twitter (X).
 
 VOICE:
@@ -566,13 +671,14 @@ def build_degen_reply_prompt(
     post_type: str = "", reply_strategy: str = "",
     existing_replies: list[str] | None = None,
     positions: list[dict] | None = None,
+    structure_name: str | None = None,
 ) -> tuple[str, str]:
     tier = LENGTH_TIERS[length_tier]
     post_type_block = ""
     if post_type and reply_strategy:
         post_type_block = f"\nPOST TYPE: {post_type}\nREPLY STRATEGY: {reply_strategy}\n"
 
-    structure = _structure_block(length_tier=length_tier)
+    structure = _structure_block(length_tier=length_tier, structure_name=structure_name)
     system = f"""You are replying to a post on crypto Twitter (X).
 
 VOICE:

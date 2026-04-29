@@ -285,13 +285,18 @@ async def do_tweet_text(ctx: SequenceContext) -> bool:
         ctx.log("[TweetText] Skipped — daily tweets cap reached.")
         return False
     topic = S.next_topic(ctx.cfg, ctx.state, ctx.enabled_topics)
-    ctx.log(f"[TweetText] Original post on topic={topic}")
+    length_tier = LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM")
+    structure = S.pick_diverse_structure(
+        ctx.state, format_key=ctx.format_key, length_tier=length_tier,
+    )
+    ctx.log(f"[TweetText] Original post on topic={topic} | structure={structure}")
     text = await generate_with_dedup(
         ctx, generate_tweet, label="generate_tweet",
         cfg=ctx.cfg, format_key=ctx.format_key,
         original_tweet=topic,
-        length_tier=LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM"),
+        length_tier=length_tier,
         enabled_topics=ctx.enabled_topics,
+        structure_name=structure,
     )
     if not text or ctx.is_cancelled():
         return False
@@ -322,13 +327,21 @@ async def do_tweet_rephrase(ctx: SequenceContext, pool: list[dict]) -> bool:
         return False
     src_url, src_handle = src.get("url", ""), src.get("handle", "")
     actual_topic = src.get("_topic", topic)
-    ctx.log(f"[TweetRephrase] From @{src_handle} ({src.get('likes', 0)} likes) | topic={actual_topic}")
+    length_tier = LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM")
+    structure = S.pick_diverse_structure(
+        ctx.state, format_key=ctx.format_key, length_tier=length_tier,
+    )
+    ctx.log(
+        f"[TweetRephrase] From @{src_handle} ({src.get('likes', 0)} likes) "
+        f"| topic={actual_topic} | structure={structure}"
+    )
     text = await generate_with_dedup(
         ctx, generate_tweet, label="generate_tweet",
         cfg=ctx.cfg, format_key=ctx.format_key,
         original_tweet=src["text"],
-        length_tier=LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM"),
+        length_tier=length_tier,
         enabled_topics=ctx.enabled_topics,
+        structure_name=structure,
     )
     if not text or ctx.is_cancelled():
         return False
@@ -379,16 +392,22 @@ async def do_tweet_media(ctx: SequenceContext, pool: list[dict]) -> bool:
         return False
     src_url, src_handle = src.get("url", ""), src.get("handle", "")
     actual_topic = src.get("_topic", topic)
+    length_tier = LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM")
+    structure = S.pick_diverse_structure(
+        ctx.state, format_key=ctx.format_key, length_tier=length_tier,
+    )
     ctx.log(
         f"[TweetMedia] From @{src_handle} ({src.get('likes', 0)} likes) "
-        f"| topic={actual_topic} | imgs={len(src.get('image_urls') or [])}"
+        f"| topic={actual_topic} | imgs={len(src.get('image_urls') or [])} "
+        f"| structure={structure}"
     )
     text = await generate_with_dedup(
         ctx, generate_tweet, label="generate_tweet",
         cfg=ctx.cfg, format_key=ctx.format_key,
         original_tweet=src["text"],
-        length_tier=LENGTH_FOR_FORMAT.get(ctx.format_key, "MEDIUM"),
+        length_tier=length_tier,
         enabled_topics=ctx.enabled_topics,
+        structure_name=structure,
     )
     if not text or ctx.is_cancelled():
         return False
@@ -428,7 +447,10 @@ async def do_qrt(ctx: SequenceContext, pool: list[dict]) -> bool:
         ctx.log(f"[QRT] Skipped — no usable post ({reason}).")
         return False
     src_url, src_handle = src.get("url", ""), src.get("handle", "")
-    ctx.log(f"[QRT] Quoting @{src_handle}")
+    # Quote comments are 1-3 sentences, so the picker is bounded to SHORT-tier
+    # structures. Still rotates so we don't ship 4 single-line QRTs in a row.
+    structure = S.pick_diverse_structure(ctx.state, length_tier="SHORT")
+    ctx.log(f"[QRT] Quoting @{src_handle} | structure={structure}")
     await ctx.human.like_and_bookmark(src_url)
     if ctx.is_cancelled():
         return False
@@ -437,6 +459,7 @@ async def do_qrt(ctx: SequenceContext, pool: list[dict]) -> bool:
         ctx, generate_quote_comment, label="generate_quote",
         cfg=ctx.cfg, original_tweet=src["text"],
         enabled_topics=ctx.enabled_topics, image_b64_list=image_b64,
+        structure_name=structure,
     )
     if not text or ctx.is_cancelled():
         return False
@@ -509,7 +532,8 @@ async def do_comment(ctx: SequenceContext, pool: list[dict],
     length = rotation[ctx.comment_idx] if ctx.comment_idx < len(rotation) else "MEDIUM"
     tone = S.tone_for(ctx.comment_idx + ctx.seq_num)
     ptype, strategy, _ = await classify_post_async(ctx, src["text"])
-    ctx.log(f"{log_prefix} @{src_handle} | {length} | {tone}")
+    structure = S.pick_diverse_structure(ctx.state, length_tier=length)
+    ctx.log(f"{log_prefix} @{src_handle} | {length} | {tone} | structure={structure}")
     await ctx.human.like_and_bookmark(src_url)
     if ctx.is_cancelled():
         return False
@@ -524,6 +548,7 @@ async def do_comment(ctx: SequenceContext, pool: list[dict],
         existing_replies=existing_replies, positions=positions,
         enabled_topics=ctx.enabled_topics,
         image_b64_list=image_b64,
+        structure_name=structure,
     )
     ctx.comment_idx += 1
     if not text or ctx.is_cancelled():
