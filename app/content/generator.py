@@ -26,7 +26,10 @@ from app.content.validator import validate_and_fix
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 3
+# 4 attempts total: prevents one-off LLM length blowouts or stubborn banned-
+# phrase repeats from killing the action entirely. Each retry includes the
+# previous rejection reason via _user_with_feedback so the model can correct.
+MAX_RETRIES = 4
 
 
 # --------------------------------------------------------------------------- #

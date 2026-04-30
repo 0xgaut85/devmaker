@@ -173,9 +173,15 @@ DEGEN_TOPIC_KEYWORDS = {
 }
 
 LENGTH_TIERS = {
-    "SHORT": {"min": 1, "max": 100, "desc": "1-2 sentences, punchy"},
-    "MEDIUM": {"min": 100, "max": 250, "desc": "3-4 sentences, adds substance"},
-    "LONG": {"min": 250, "max": 500, "desc": "Paragraph with line breaks, deep engagement"},
+    # Caps were tuned for short tweets, but multi-paragraph / lead-plus-bullets
+    # structures naturally produce more text. Bumping LONG from 500 -> 600
+    # (validator slack +40 -> ~640) lets a 3-paragraph reflection actually fit
+    # without 80% of generations hitting "Too long for LONG" and being thrown
+    # away. SHORT bumps from 100 -> 140 for the same reason on QRTs/quotes
+    # where one flowing sentence with a setup commonly hits 150-180 chars.
+    "SHORT": {"min": 1, "max": 140, "desc": "1-2 sentences, punchy"},
+    "MEDIUM": {"min": 100, "max": 280, "desc": "3-4 sentences, adds substance"},
+    "LONG": {"min": 250, "max": 600, "desc": "Paragraph with line breaks, deep engagement"},
     "XL": {"min": 500, "max": 2000, "desc": "Long tweet, multiple paragraphs"},
 }
 

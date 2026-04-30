@@ -374,6 +374,12 @@ async def do_tweet_media(ctx: SequenceContext, pool: list[dict]) -> bool:
     source happens to have it. This handler hard-filters the pool to posts
     with images first; if nothing qualifies it skips with a clear log instead
     of silently posting text-only.
+
+    The vision-relevance check is INTENTIONALLY skipped here. The user opted
+    into media tweets via ``seq_media_tweets > 0``; the source is already
+    high-engagement (so the image is solid content); and we picked a topic
+    match before generating. Adding a strict vision filter on top kept
+    rejecting valid images and we'd burn the LLM call only to skip-text-only.
     """
     if not S.can_act(ctx.state, ctx.cfg, "tweets"):
         ctx.log("[TweetMedia] Skipped — daily tweets cap reached.")
@@ -412,12 +418,8 @@ async def do_tweet_media(ctx: SequenceContext, pool: list[dict]) -> bool:
     if not text or ctx.is_cancelled():
         return False
     ctx.log(f"[TweetMedia] Generated ({len(text)} chars): {_truncate(text)}")
-    image_urls = await filter_images_with_vision(ctx, src.get("image_urls") or [], text)
-    if not image_urls:
-        # Vision check (if on) rejected every image. Skip rather than silently
-        # post text-only — the user opted into media tweets explicitly.
-        ctx.log("[TweetMedia] Skipped — vision check rejected all source images.")
-        return False
+    # Skip vision relevance check (see docstring). Use source images as-is.
+    image_urls = src.get("image_urls") or []
     try:
         await ctx.ext.send("post_tweet", text=text, image_urls=image_urls)
     except Exception as e:

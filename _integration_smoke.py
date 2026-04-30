@@ -894,6 +894,159 @@ def test_structure_block_is_last_before_critical_rules():
     )
 
 
+# --------------------------------------------------------------------------- #
+#  Test 14 - explicit length cap + banned phrases up-front in the prompt      #
+# --------------------------------------------------------------------------- #
+
+def test_rephrase_prompt_includes_explicit_length_cap():
+    print("\n[14] explicit length cap & banned phrases in prompt")
+    from app.content.rules import LENGTH_FOR_FORMAT, LENGTH_TIERS
+    # Format F is LONG-tier (max 600 after the bump).
+    system, _ = build_tweet_rephrase_prompt(
+        voice="dev", bad_examples="", good_examples="",
+        format_key="F", original_tweet="any topic",
+        structure_name="multi_paragraph",
+    )
+    expected_max = LENGTH_TIERS[LENGTH_FOR_FORMAT["F"]]["max"]
+    _say(
+        "rephrase prompt contains LENGTH BUDGET line with explicit char cap",
+        f"LENGTH BUDGET" in system and f"at most {expected_max} characters" in system,
+        f"system tail: ...{system[-700:]}",
+    )
+    _say(
+        "rephrase prompt CRITICAL RULES restate the cap by number",
+        f"stay at or under {expected_max} characters" in system,
+        "missing critical-rule restatement",
+    )
+
+
+def test_quote_prompt_includes_explicit_length_cap():
+    from app.content.prompts import build_quote_comment_prompt
+    from app.content.rules import LENGTH_TIERS
+    system, _ = build_quote_comment_prompt(
+        voice="dev", bad_examples="", good_examples="",
+        original_tweet="hello",
+    )
+    short_max = LENGTH_TIERS["SHORT"]["max"]
+    _say(
+        "quote prompt contains LENGTH BUDGET line for SHORT tier",
+        f"LENGTH BUDGET (HARD): SHORT" in system and f"at most {short_max} characters" in system,
+        f"system tail: ...{system[-600:]}",
+    )
+
+
+def test_prompts_list_banned_phrases_upfront():
+    from app.content.rules import BANNED_PHRASES
+    rephrase, _ = build_tweet_rephrase_prompt(
+        voice="dev", bad_examples="", good_examples="",
+        format_key="C", original_tweet="any",
+    )
+    quote, _ = build_quote_comment_prompt(
+        voice="dev", bad_examples="", good_examples="",
+        original_tweet="any",
+    )
+    sample = BANNED_PHRASES[0]  # "game-changer" today
+    _say(
+        f"rephrase prompt mentions banned phrase '{sample}' upfront",
+        f'"{sample}"' in rephrase and "BANNED PHRASES" in rephrase,
+        f"first occurrence around: ...{rephrase[rephrase.find('BANNED PHRASES'):rephrase.find('BANNED PHRASES')+200]}",
+    )
+    _say(
+        f"quote prompt mentions banned phrase '{sample}' upfront",
+        f'"{sample}"' in quote and "BANNED PHRASES" in quote,
+        "missing in quote prompt",
+    )
+
+
+def test_tweet_media_skips_vision_check():
+    print("\n[15] do_tweet_media bypasses vision filter")
+    from app.engine.actions import do_tweet_media
+    from unittest.mock import patch
+    pool = [{
+        "url": "https://x.com/a/1", "handle": "alice", "text": "post about AI agents",
+        "likes": 500, "_topic": "AI/ML tools",
+        "image_urls": ["https://pbs.twimg.com/img.jpg"],
+    }]
+    cfg = {
+        "openai_api_key": "sk-fake", "llm_provider": "openai",
+        "topics": {"AI/ML tools": 5},
+        "daily_max_tweets": 100,
+        "use_vision_image_check": True,  # vision is ON globally
+    }
+
+    class _StubExt:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+        async def send(self, action: str, **kwargs):
+            self.calls.append((action, kwargs))
+            return {"status": "ok"}
+        async def safe_dismiss_compose(self):
+            return None
+
+    class _StubHuman:
+        async def organic_pause(self):
+            return None
+
+    ext = _StubExt()
+    logs: list[str] = []
+    ctx = SequenceContext(
+        account_id="t", cfg=cfg, state={},
+        log=logs.append, ext=ext, human=_StubHuman(),  # type: ignore[arg-type]
+        is_cancelled=lambda: False, persist=_async_noop,
+        enabled_topics=["AI/ML tools"], format_key="A",
+    )
+    # Patch the generator + filter_images_with_vision so we can detect calls.
+    vision_called = {"hit": False}
+
+    async def _spy_vision(ctx, urls, text):
+        vision_called["hit"] = True
+        return []  # would have killed the post if it ran
+
+    with patch("app.engine.actions.filter_images_with_vision", _spy_vision), \
+         patch(
+             "app.engine.actions.generate_tweet",
+             lambda **kw: GenerationResult(text="A short pithy take on AI agents."),
+         ):
+        ok = asyncio.run(do_tweet_media(ctx, pool))
+
+    _say(
+        "do_tweet_media posts successfully when source has media",
+        ok is True,
+        f"ok={ok}, logs={logs[-3:]}",
+    )
+    _say(
+        "do_tweet_media DID NOT call filter_images_with_vision (skip-vision policy)",
+        vision_called["hit"] is False,
+        "vision filter ran when it should have been bypassed",
+    )
+    _say(
+        "post_tweet was sent with the source image_urls intact",
+        any(action == "post_tweet" and kwargs.get("image_urls") == ["https://pbs.twimg.com/img.jpg"]
+            for action, kwargs in ext.calls),
+        f"ext calls: {ext.calls}",
+    )
+
+
+def test_long_cap_now_fits_multi_paragraph():
+    # Validator should ACCEPT a 580-char multi-paragraph LONG post (was rejected
+    # at the previous cap of 540 -> blocking nearly every Format F generation).
+    from app.content.validator import validate_and_fix
+    text = (
+        "Postgres has quietly become the default for new projects, and the reason is simpler than people admit. "
+        "Mature planner, predictable indexes, JSONB when you need it, and replication that does not need a PhD.\n\n"
+        "What changed is the surrounding tooling. Connection pooling stopped being a war crime, "
+        "managed offerings stopped being expensive, and the cloud lock-in story is finally weaker than the data-portability story.\n\n"
+        "If your team is choosing a database in 2026 and Postgres does not win the spreadsheet, "
+        "the spreadsheet is wrong."
+    )
+    res = validate_and_fix(text, length_tier="LONG")
+    _say(
+        "LONG validator accepts ~580-char multi-paragraph post",
+        res.passed,
+        f"len={len(text)}, reason={res.reason}",
+    )
+
+
 def test_critical_rules_reinforce_structure():
     system, _ = build_tweet_rephrase_prompt(
         voice="dev", bad_examples="", good_examples="",
@@ -939,6 +1092,11 @@ def main() -> int:
     test_action_layer_can_force_structure()
     test_structure_block_is_last_before_critical_rules()
     test_critical_rules_reinforce_structure()
+    test_rephrase_prompt_includes_explicit_length_cap()
+    test_quote_prompt_includes_explicit_length_cap()
+    test_prompts_list_banned_phrases_upfront()
+    test_tweet_media_skips_vision_check()
+    test_long_cap_now_fits_multi_paragraph()
 
     print(f"\n{'='*60}")
     print(f"  passed: {len(PASS)}")

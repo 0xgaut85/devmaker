@@ -3,12 +3,14 @@
 import random
 
 from app.content.rules import (
-    GRAMMAR_RULES,
-    REPLY_GRAMMAR_RULES,
     ANTI_SLOP_RULES,
-    FORMAT_CATALOG,
+    BANNED_PHRASES,
     DEGEN_FORMAT_CATALOG,
+    FORMAT_CATALOG,
+    GRAMMAR_RULES,
+    LENGTH_FOR_FORMAT,
     LENGTH_TIERS,
+    REPLY_GRAMMAR_RULES,
     THREAD_FORMAT_CATALOG,
 )
 
@@ -120,16 +122,21 @@ _FORMAT_STRUCTURE_WEIGHTS: dict[str, dict[str, float]] = {
     "L": {"flowing_paragraph": 0.35, "two_paragraphs": 0.35, "line_broken": 0.15, "lead_plus_bullets": 0.15},
 
     # --- New 10 (M-V) ------------------------------------------------------
+    # multi_paragraph removed from any non-LONG format. With LENGTH_FOR_FORMAT
+    # mapping N and S to MEDIUM (cap ~280 chars), a real multi_paragraph
+    # output (3+ paragraphs) lands at 400-600 chars and gets rejected by the
+    # validator. We saw this in production logs as repeated "Too long for LONG"
+    # / "Too long for MEDIUM" failures eating LLM budget for nothing.
     "M": {"flowing_paragraph": 0.50, "single_line": 0.30, "two_paragraphs": 0.20},   # Conditional rule
-    "N": {"two_paragraphs": 0.45, "flowing_paragraph": 0.35, "multi_paragraph": 0.20},  # Generational shift
+    "N": {"two_paragraphs": 0.50, "flowing_paragraph": 0.35, "line_broken": 0.15},   # Generational shift
     "O": {"single_line": 0.50, "flowing_paragraph": 0.30, "lead_plus_bullets": 0.20},  # Stop-doing prescription
     "P": {"flowing_paragraph": 0.45, "two_paragraphs": 0.40, "setup_punchline": 0.15},  # Definition reframe
     "Q": {"single_line": 1.0},                                                       # Open question (pinned)
     "R": {"flowing_paragraph": 0.40, "two_paragraphs": 0.30, "setup_punchline": 0.15, "single_line": 0.15},  # Counter-narrative
-    "S": {"flowing_paragraph": 0.40, "two_paragraphs": 0.45, "multi_paragraph": 0.15},  # Confession
+    "S": {"flowing_paragraph": 0.45, "two_paragraphs": 0.45, "line_broken": 0.10},   # Confession
     "T": {"single_line": 0.40, "flowing_paragraph": 0.35, "setup_punchline": 0.25},     # Recommendation
     "U": {"single_line": 0.65, "setup_punchline": 0.35},                                # Wordplay / wit
-    "V": {"two_paragraphs": 0.45, "multi_paragraph": 0.30, "flowing_paragraph": 0.25},  # Metaphor / analogy
+    "V": {"two_paragraphs": 0.50, "multi_paragraph": 0.30, "flowing_paragraph": 0.20},  # Metaphor / analogy (LONG-tier)
 }
 
 # Degen formats — same idea, sized to match each format's natural shape.
@@ -244,6 +251,50 @@ def _reply_length_caps(length_tier: str) -> str:
     if length_tier == "LONG":
         return f"Hard cap ~{mx} characters. At most 4 short sentences. Still a reply, not a blog post."
     return f"Stay within ~{mx} characters."
+
+
+def _length_cap_block(length_tier: str | None) -> str:
+    """Explicit LENGTH instruction for tweets/quotes/threads.
+
+    Without this the LLM has no idea what the validator's max is, so it
+    consistently overshoots (we saw "Too long for LONG: 577 chars" repeatedly
+    in production). Returns a multi-line block ready to drop into the system
+    prompt.
+    """
+    if not length_tier or length_tier not in LENGTH_TIERS:
+        return ""
+    tier = LENGTH_TIERS[length_tier]
+    mx = tier["max"]
+    if length_tier == "SHORT":
+        guidance = "1-2 sentences max. If your draft is longer than this, cut it."
+    elif length_tier == "MEDIUM":
+        guidance = "3-4 sentences max. Stop before you hit essay length."
+    elif length_tier == "LONG":
+        guidance = "Several sentences or a few short paragraphs. Trim adjectives ruthlessly."
+    else:
+        guidance = "Multiple paragraphs welcome. Keep each paragraph tight."
+    return (
+        f"\nLENGTH BUDGET (HARD): {length_tier} — at most {mx} characters total. "
+        f"{guidance} Count silently as you write. Going over the cap means your post is REJECTED.\n"
+    )
+
+
+def _banned_phrases_block() -> str:
+    """List the validator's banned phrases inline so the LLM avoids them on
+    the first attempt.
+
+    Without this, the model writes "game-changer" / "dive deep" / etc., gets
+    rejected, retries with a corrective prompt, and still uses the same phrase
+    half the time (we saw 3-attempt-failure loops on "game-changer"
+    specifically). Listing the phrases up-front prevents the loop entirely.
+    """
+    if not BANNED_PHRASES:
+        return ""
+    listed = ", ".join(f'"{p}"' for p in BANNED_PHRASES)
+    return (
+        f"\nBANNED PHRASES — these substrings will REJECT your post outright. "
+        f"Do not use any of: {listed}. Pick a fresh phrase instead.\n"
+    )
 
 
 def _voice_block(voice: str) -> str:
@@ -408,6 +459,9 @@ def build_tweet_rephrase_prompt(
     cfg = cfg or {}
     fmt = FORMAT_CATALOG[format_key]
     structure = _structure_block(format_key=format_key, structure_name=structure_name)
+    length_tier = LENGTH_FOR_FORMAT.get(format_key, "MEDIUM")
+    length_cap = _length_cap_block(length_tier)
+    banned = _banned_phrases_block()
     # We deliberately put the STRUCTURE block AFTER good_examples and
     # recent_posts. The LLM weighs the most-recent context most heavily, and
     # without this placement the model would imitate good_examples (which are
@@ -423,12 +477,13 @@ VOICE — write exactly like this person:
 
 {_dodont_block(dev_do, dev_dont)}FORMAT for this post: {fmt['name']}
 {fmt['desc']}
-
+{length_cap}{banned}
 {_examples_block(bad_examples, good_examples)}
 {_recent_posts_block(recent_posts)}
 {structure}
 
 CRITICAL RULES (read in this order, each one is non-negotiable):
+- LENGTH CAP: stay at or under {LENGTH_TIERS[length_tier]['max']} characters total. Going over means REJECTED.
 - The STRUCTURE block immediately above DEFINES the visual shape of THIS post. Match the example shape exactly. Do NOT default to a paragraph.
 - If STRUCTURE says single_line, output ONE line. No \\n at all.
 - If STRUCTURE says line_broken, separate every sentence with a blank line.
@@ -473,6 +528,8 @@ def build_quote_comment_prompt(
         length_tier="SHORT" if random.random() < 0.6 else "MEDIUM",
         structure_name=structure_name,
     )
+    length_cap = _length_cap_block("SHORT")
+    banned = _banned_phrases_block()
     system = f"""You are writing a quote retweet comment for X (Twitter).
 
 VOICE — write exactly like this person:
@@ -482,11 +539,12 @@ VOICE — write exactly like this person:
 
 {ANTI_SLOP_RULES}
 
-{_dodont_block(dev_do, dev_dont)}{_examples_block(bad_examples, good_examples)}
+{_dodont_block(dev_do, dev_dont)}{length_cap}{banned}{_examples_block(bad_examples, good_examples)}
 {_recent_posts_block(recent_posts)}
 {structure}
 
 CRITICAL RULES (read in this order, each one is non-negotiable):
+- LENGTH CAP: stay at or under {LENGTH_TIERS['SHORT']['max']} characters total. Going over means REJECTED.
 - The STRUCTURE block immediately above DEFINES the visual shape of THIS post. Match the example shape exactly. Do NOT default to a paragraph.
 - If STRUCTURE says single_line, output ONE line.
 - Output ONLY the quote comment text. No quotes, no labels.
@@ -530,6 +588,7 @@ def build_reply_comment_prompt(
     img_note = "\n- The tweet includes images. Use them to understand memes, screenshots, charts, or visual context." if has_images else ""
 
     structure = _structure_block(length_tier=length_tier, structure_name=structure_name)
+    banned = _banned_phrases_block()
     system = f"""You are writing a reply comment on X (Twitter).
 
 VOICE — write exactly like this person:
@@ -538,7 +597,7 @@ VOICE — write exactly like this person:
 {_personality_block(cfg)}{_topics_block(enabled_topics or [])}{_tone_awareness_block()}{REPLY_GRAMMAR_RULES}
 
 {ANTI_SLOP_RULES}
-
+{banned}
 {_dodont_block(dev_do, dev_dont)}{_examples_block(bad_examples, good_examples)}
 {_recent_posts_block(recent_posts)}{post_type_block}{_existing_replies_block(existing_replies)}{_positions_block(positions)}
 LENGTH: {length_tier} ({tier['desc']}) — target {tier['min']}-{tier['max']} characters.
@@ -548,6 +607,7 @@ TONE: {tone.replace('_', ' ')}
 {structure}
 
 CRITICAL RULES (read in this order, each one is non-negotiable):
+- LENGTH CAP: stay at or under {tier['max']} characters total. Going over means REJECTED.
 - The STRUCTURE block immediately above DEFINES the visual shape of THIS post. Match the example shape exactly. Do NOT default to a paragraph.
 - If STRUCTURE says single_line, output ONE line.
 - Output ONLY the comment text. No quotes, no labels.
@@ -597,6 +657,8 @@ def build_degen_tweet_prompt(
 ) -> tuple[str, str]:
     fmt = DEGEN_FORMAT_CATALOG[format_key]
     structure = _structure_block(format_key=format_key, degen=True, structure_name=structure_name)
+    length_cap = _length_cap_block("MEDIUM")
+    banned = _banned_phrases_block()
     system = f"""You are a crypto Twitter (CT) poster writing posts for X.
 
 VOICE:
@@ -604,10 +666,11 @@ VOICE:
 
 {_dodont_block(degen_do, degen_dont)}FORMAT for this post: {fmt['name']}
 {fmt['desc']}
-
+{length_cap}{banned}
 {structure}
 {_recent_posts_block(recent_posts)}
 RULES:
+- LENGTH CAP: stay at or under {LENGTH_TIERS['MEDIUM']['max']} characters total. Going over means REJECTED.
 - Output ONLY the final post text. No quotes, no labels, no explanation.
 - Sound like a real CT degen, not a bot or a corporate account.
 - Use crypto slang naturally but don't force it.
@@ -638,15 +701,18 @@ def build_degen_quote_comment_prompt(
         length_tier="SHORT" if random.random() < 0.6 else "MEDIUM",
         structure_name=structure_name,
     )
+    length_cap = _length_cap_block("SHORT")
+    banned = _banned_phrases_block()
     system = f"""You are writing a quote retweet comment on crypto Twitter (X).
 
 VOICE:
 {_degen_voice_block(voice)}
 
-{_dodont_block(degen_do, degen_dont)}{structure}
+{_dodont_block(degen_do, degen_dont)}{length_cap}{banned}{structure}
 
 {_recent_posts_block(recent_posts)}
 RULES:
+- LENGTH CAP: stay at or under {LENGTH_TIERS['SHORT']['max']} characters total. Going over means REJECTED.
 - Output ONLY the quote comment text.
 - 1-3 sentences. Add real alpha, a take, or a funny reaction.
 - FOLLOW THE STRUCTURE block above exactly.
